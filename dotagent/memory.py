@@ -54,8 +54,8 @@ class ProjectMemory:
             raise ValueError('memory text must contain 1–20000 characters')
         if not isinstance(source, str) or not source.strip() or len(source) > 2000:
             raise ValueError('memory source is required (file, URL, ticket, or explicit user correction)')
-        if kind not in ('fact', 'decision', 'lesson', 'correction', 'assumption'):
-            raise ValueError('memory kind must be fact, decision, lesson, correction, or assumption')
+        if kind not in ('fact', 'decision', 'lesson', 'correction', 'assumption', 'guidance'):
+            raise ValueError('memory kind must be fact, decision, lesson, correction, assumption, or guidance')
         if revision is not None and (not isinstance(revision, str) or len(revision) > 200):
             raise ValueError('memory revision must be a string of at most 200 characters')
         content = redact(dict(text=text.strip(), source=source.strip(), kind=kind, revision=revision))
@@ -103,6 +103,10 @@ class ProjectMemory:
     def list(self, limit=50, *, include_retired=False):
         condition = '' if include_retired else 'WHERE retired IS NULL'
         return [dict(row) for row in self.db.execute(f'SELECT * FROM memories {condition} ORDER BY created DESC, id LIMIT ?', (self._limit(limit),))]
+
+    def guidance(self):
+        return [dict(row) for row in self.db.execute(
+            "SELECT * FROM memories WHERE retired IS NULL AND kind='guidance' ORDER BY created DESC LIMIT 20")]
 
     def search(self, query, limit=10):
         if not isinstance(query, str) or not query.strip() or len(query) > 2000:

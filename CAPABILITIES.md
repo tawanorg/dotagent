@@ -76,3 +76,39 @@ No standalone Hermes memory API is claimed or invented.
 - https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/agent/transports/hermes_tools_mcp_server.py#L53
 - https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/website/docs/user-guide/profiles.md
 - https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/website/docs/user-guide/features/memory.md
+
+## Host entry points and task sources (7 October 2026)
+
+- Official Codex skills docs: https://developers.openai.com/codex/skills/ — explicit
+  `$dotagent` or `/skills`, user discovery in `~/.agents/skills`, symlinks supported.
+  No invented `/dotagent` custom command is claimed for Codex.
+- Official Claude Code docs: https://code.claude.com/docs/en/skills — a user
+  `~/.claude/skills/dotagent/SKILL.md` provides `/dotagent` and `$ARGUMENTS`.
+  Claude-specific frontmatter is not validated by the Codex-only validator.
+- Both entry points read one installed INTERACTION.md and PLAYBOOK.md; no extra
+  orchestration runtime or API subscription-token reuse is introduced.
+- Local requests are durable tasks. Other tracker context can be imported by the
+  host's authenticated tools with its URL. Automated Jira intake remains optional;
+  GitHub mentions use supported `gh api` issue comments, PR review comments and reviews.
+- Private screenshot verification can use authenticated GitHub `body_html` from
+  the actual PR, decoded in Chromium. The receipt distinguishes this surface from
+  the full GitHub page; signed CDN query strings never enter receipts or logs.
+
+## Visible terminal and human handoff
+
+Installed Codex 0.160.1 supports `codex resume UUID --no-daemon --no-alt-screen`
+and `codex --no-daemon exec`. Isolated execution owns its process group; shared
+daemon execution is unsuitable for reliable local worker interruption here.
+A fresh isolated session was reopened in the interactive terminal with history.
+Official entry point: https://developers.openai.com/codex/cli/features/.
+
+Claude's installed CLI and https://code.claude.com/docs/en/sessions document
+`claude --resume UUID` for a persisted `-p` session, although those sessions do
+not appear in the ordinary picker. Dotagent uses the exact recorded ID, never
+`--last` or `--continue` across concurrent tasks. Interactive Claude handoff
+remains unverified on this machine.
+
+Enter/Ctrl-C in the visible worker requests task ownership, stops native execution,
+waits for its iteration lock and launches the host TUI. The child inherits exclusive
+locks across launcher crashes. Explicit return reconciles human changes and reruns
+verification. This is stop-and-resume, not two clients writing the same session.

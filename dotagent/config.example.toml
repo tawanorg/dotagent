@@ -1,15 +1,18 @@
-state_dir = "~/.local/state/dotagent"
+# Project configuration. The host skill discovers real setup/check commands from
+# your repository; replace these placeholders rather than copying another project.
+project_name = "my-project"
 concurrency = 1
-min_free_gb = 10
+min_free_gb = 5
+
+[tasks]
+provider = "local" # plain-language requests; no tracker required
+poll_seconds = 30
 
 [host]
 codex_sandbox = "workspace-write"
 claude_permission_mode = "acceptEdits"
 iteration_seconds = 1800
 stall_seconds = 600
-# Optional explicit arguments use native host permissions. Never copy login tokens.
-codex_args = []
-claude_args = []
 
 [limits]
 max_iterations = 30
@@ -18,44 +21,26 @@ max_stagnant = 4
 task_seconds = 28800
 iteration_wall_seconds = 3600
 backoff_seconds = 10
-# max_spend_usd requires USD-reporting worker AND Jira host. Codex subscriptions
-# do not expose USD cost, so doctor rejects a hard-dollar cap with that host.
-
-[jira]
-host = "codex"
-site = "https://coterieholdings.atlassian.net"
-jql = 'project = QB AND assignee = "5aacdfe733719f2a5016620e" AND statusCategory != Done ORDER BY priority DESC, updated ASC'
-eligible_statuses = ["In Progress", "Dev Ready"]
-active_statuses = ["In Progress"]
-priorities = ["Highest", "High", "Medium", "Low", "Lowest"]
-poll_seconds = 300
-max_tickets = 100
 
 [repository]
-path = "/Users/tawanc/Work/coterie-qb-prototype/coterie-qb"
-github = "Jerawine/coterie-qb-prototype"
+path = "/absolute/path/to/repository"
+github = "OWNER/REPOSITORY"
 base = "origin/main"
 pr_base = "main"
-adapter = "coterie"
-compose_files = ["docker-compose.yml"]
+compose_files = ["compose.yml"]
 app_port = "app:3000"
-services = ["db", "keycloak-db", "keycloak", "app", "typesense", "mailpit", "cloud-tasks-emulator", "audit-worker"]
-jobs = ["migrate", "keycloak-provision", "app-access", "typesense-index"]
+services = ["app"]
+checks = [{argv = ["YOUR_TEST_COMMAND"], cwd = "."}]
 copy_ignored = []
-cpus_per_service = 2
-memory_per_service = "2g"
-startup_seconds = 1800
-readiness_seconds = 300
-check_seconds = 900
-playwright_package = "@playwright/test"
-setup = [{ argv = ["npm", "ci"], cwd = "." }]
-checks = [
-  { argv = ["npm", "run", "lint"], cwd = "app" },
-  { argv = ["npm", "run", "typecheck"], cwd = "app" },
-  { argv = ["npm", "test", "--", "--run"], cwd = "app" },
-  { argv = ["npm", "run", "build"], cwd = "app" },
-]
+cpus_per_service = 1
+memory_per_service = "1g"
+playwright_package = "/absolute/path/to/node_modules/@playwright/test"
 
-[repository.check_env]
-SKIP_RESEED_TESTS = "1"
-APP_ENV = "local"
+# Optional phone-to-Mac trigger. Only these users can queue work.
+[github_mentions]
+enabled = false
+allowed_users = ["YOUR_GITHUB_LOGIN"]
+poll_seconds = 30
+
+# Jira is optional. Set tasks.provider="jira" and configure [jira] explicitly.
+# See config.coterie.example.toml for that project's complete adapter example.

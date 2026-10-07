@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import subprocess
+import time
 import sys
 
 from .environment import Environment
@@ -14,6 +16,7 @@ from .supervisor import supervise, open_studio
 from .projects import resolve_config
 from .memory import ProjectMemory
 from .state import State, atomic
+from .tasks import source_config, add_task
 
 
 def load_config(path=None, project=None):
@@ -25,8 +28,10 @@ def load_config(path=None, project=None):
                        'task_seconds': 28800, 'iteration_wall_seconds': 3600,
                        'backoff_seconds': 10}.items():
         config['limits'].setdefault(key, value)
-    config['jira'].setdefault('poll_seconds', 300)
-    config['jira'].setdefault('cwd', config['repository']['path'])
+    config['tasks'] = source_config(config)
+    if config['tasks']['provider'] == 'jira':
+        config['jira'].setdefault('poll_seconds', config['tasks']['poll_seconds'])
+        config['jira'].setdefault('cwd', config['repository']['path'])
     if config['limits'].get('max_spend_usd') is not None:
         config['host']['max_spend_usd'] = config['limits']['max_spend_usd']
     if type(config.get('concurrency', 1)) is not int or config.get('concurrency', 1) < 1:
@@ -34,7 +39,7 @@ def load_config(path=None, project=None):
     for name in ('path', 'github', 'pr_base', 'compose_files', 'app_port', 'services', 'checks'):
         if not config['repository'].get(name):
             raise ValueError(f'missing repository.{name}')
-    for name in ('site', 'jql', 'priorities', 'eligible_statuses'):
+    for name in (('site', 'jql', 'priorities', 'eligible_statuses') if config['tasks']['provider'] == 'jira' else ()):
         if not config['jira'].get(name):
             raise ValueError(f'missing jira.{name}')
     return config
@@ -49,7 +54,10 @@ def doctor(config, host):
         except (OSError, RuntimeError, TimeoutError):
             ok = False
         results.append({'check': name, 'passed': ok})
-    for tool in set(['git', 'docker', 'gh', host, config['jira'].get('host', 'codex'), 'node']):
+    tools = ['git', 'docker', 'gh', host, 'node']
+    if source_config(config)['provider'] == 'jira':
+        tools.append(config['jira'].get('host', 'codex'))
+    for tool in set(tools):
         results.append({'check': tool + ' on PATH', 'passed': shutil.which(tool) is not None})
     probe('GitHub authentication', ['gh', 'auth', 'status'])
     probe('GitHub repository access', ['gh', 'repo', 'view', config['repository']['github'], '--json', 'nameWithOwner'])
@@ -60,6 +68,9 @@ def doctor(config, host):
     results.append({'check': 'origin matches configured GitHub repository',
                     'passed': remote_matches(config['repository']['path'], config['repository']['github'])})
     probe('host authentication', ['codex', 'login', 'status'] if host == 'codex' else ['claude', 'auth', 'status'])
+    if host == 'codex':
+        results.append({'check': 'Codex supports owned execution (--no-daemon)',
+                        'passed': '--no-daemon' in command(['codex', '--help']).stdout})
     if host == 'claude':
         auth = command(['claude', 'auth', 'status'], check=False)
         results.append({'check': 'Claude login active', 'passed': json.loads(auth.stdout or '{}').get('loggedIn', False)})
@@ -70,13 +81,13 @@ def doctor(config, host):
                     config.get('min_free_gb', 5) * 1024 ** 3})
     if config['limits'].get('max_spend_usd') is not None:
         results.append({'check': 'hard dollar cap requires cost-reporting hosts for worker AND Jira bridge',
-                        'passed': host == 'claude' and config['jira'].get('host', 'codex') == 'claude'})
+                        'passed': host == 'claude' and (source_config(config)['provider'] != 'jira' or config['jira'].get('host', 'codex') == 'claude')})
     root = Path(__file__).resolve().parents[1]
     results.append({'check': 'Mastra build and scheduler', 'passed':
                     (root / '.mastra/output/index.mjs').exists() and (root / 'dist/src/runner.js').exists()})
     for row in results:
         print(('PASS ' if row['passed'] else 'FAIL ') + row['check'])
-    print('Jira OAuth and browser permissions are checked by live calls; registration alone is not proof.')
+    print('Configured integrations and browser permissions require live checks; registration alone is not proof.')
     return all(r['passed'] for r in results)
 
 
@@ -119,6 +130,7 @@ def main():
         sub = commands.add_parser(name)
         sub.add_argument('--host', choices=['codex', 'claude'], default='codex')
         if name == 'start':
+            sub.add_argument('--detach', action='store_true', help='Run supervisor in background and return to the host chat')
             sub.add_argument('--once', action='store_true', help='One intake/iteration, useful for diagnostics')
             sub.add_argument('--workers', type=int, help='Concurrent task workers; any positive count')
             sub.add_argument('--no-browser', action='store_true', help='Do not open the project dashboard')
@@ -137,12 +149,63 @@ def main():
     memory.add_argument('--kind', default='fact')
     memory.add_argument('--id', help='Existing memory to correct')
     memory.add_argument('--reason', default='Explicit user correction')
+    task = commands.add_parser('task', help='Queue a plain-language request without a tracker')
+    task.add_argument('text', nargs='?')
+    task.add_argument('--file', help='UTF-8 request file outside source; avoids shell interpolation')
+    task.add_argument('--id', help='Stable task ID for idempotent retries')
+    task.add_argument('--url', help='Optional source issue URL (GitHub, Linear or another tracker)')
+    task.add_argument('--origin', default='user', help='Request provenance')
+    instruction = commands.add_parser('instruct', help='Add task guidance for the next engineering iteration')
+    instruction.add_argument('task')
+    instruction.add_argument('text')
+    commands.add_parser('show').add_argument('task')
+    commands.add_parser('watch', help='Live worker terminal; Enter or Ctrl-C takes over').add_argument('task')
+    commands.add_parser('takeover', help='Stop task automation and continue in native Claude/Codex').add_argument('task')
+    commands.add_parser('terminal', help='Open this worker in a Mac Terminal window').add_argument('task')
+    commands.add_parser('poll', help='Poll configured GitHub mentions now')
+    commands.add_parser('learn', help='Remember explicit project guidance').add_argument('text')
     commands.add_parser('studio')
 
     args = parser.parse_args()
     try:
         config = load_config(args.config, args.project)
-        state = State(config['state_dir'])
+        state = State(config['state_dir'], readonly=args.action in ('status', 'show', 'studio'))
+        if args.action in ('watch', 'terminal', 'takeover'):
+            from .terminal import watch, open_terminal, takeover
+            if args.action == 'watch':
+                watch(state, config, args.task)
+            elif args.action == 'takeover':
+                takeover(state, config, args.task)
+            elif not open_terminal(state, config, args.task):
+                raise RuntimeError('Could not open Terminal; run dotagent watch '+args.task)
+            return
+        if args.action == 'poll':
+            from .github_mentions import poll
+            print(json.dumps(poll(state, config, force=True)))
+            return
+        if args.action == 'task':
+            if bool(args.text) == bool(args.file):
+                raise ValueError('provide request text or --file')
+            text = Path(args.file).read_text() if args.file else args.text
+            print(json.dumps(add_task(state, config, text, args.id, args.url, args.origin), indent=2))
+            return
+        if args.action == 'instruct':
+            state.instruct(args.task, args.text)
+            print('Instruction saved; applied before the next verification/delivery boundary. Use resume for a blocked task.')
+            return
+        if args.action == 'show':
+            task = state.task(args.task)
+            if not task:
+                raise ValueError('unknown task')
+            print(json.dumps({**task, 'instructions':state.instructions(args.task)}, indent=2))
+            return
+        if args.action == 'learn':
+            brain = ProjectMemory(config)
+            try:
+                print(json.dumps(brain.remember(args.text, source='explicit user guidance', kind='guidance'), indent=2))
+            finally:
+                brain.close()
+            return
         if args.action == 'memory':
             brain = ProjectMemory(config)
             if args.operation == 'remember':
@@ -168,19 +231,24 @@ def main():
                      'last_verified': next((e for e in reversed(t['evidence']) if e['exit_code'] == 0), None),
                      'blockers': t['blockers'], 'next_action': t['next_action'],
                      'worktree': t.get('worktree'), 'branch': t.get('branch'), 'host': t.get('host'),
+                     'human_control': bool(state.get('human:' + t['id'])),
                      'pr': t['delivery'].get('pr')} for t in state.tasks()]
             if args.json:
                 print(json.dumps({'paused': state.get('paused', False), 'tasks': rows,
-                                  'intake_error': state.get('intake_error')}, indent=2))
+                                  'intake_error': state.get('intake_error'), 'mention_error': state.get('github_mentions_error')}, indent=2))
             else:
                 print(config.get('project_name', 'dotagent') + ': ' + ('Paused' if state.get('paused') else 'Ready'))
                 print('Studio: ' + state.get('studio_url', 'not started'))
                 for row in rows:
                     print(f"{row['ticket']} | {row['status']}/{row['phase']} | {row['next_action']}")
+                    if row['human_control']:
+                        print('  Human control: automation held until explicit resume')
                     if row['worktree']:
                         print(f"  {row['host']} | {row['branch']} | {row['worktree']}")
                     for blocker in row['blockers']:
                         print('  Blocked: ' + blocker)
+                if state.get('github_mentions_error'):
+                    print('GitHub mention: ' + state.get('github_mentions_error'))
                 if state.get('intake_error'):
                     print('Intake: ' + state.get('intake_error'))
             return
@@ -189,6 +257,10 @@ def main():
             print('Pause requested; active worker will checkpoint and stop.')
         elif args.action == 'resume':
             if args.task:
+                from .terminal import return_to_automation
+                if return_to_automation(state, args.task, args.note):
+                    print('Returned to automation; human edits will be reconciled and verified.')
+                    return
                 task = state.task(args.task)
                 if not task:
                     raise RuntimeError('unknown task')
@@ -196,7 +268,7 @@ def main():
                     raise RuntimeError('task is already awaiting review')
                 if task.pop('workflow_failed', False):
                     task.setdefault('workflow_history', []).append(task.pop('workflow_run'))
-                task.update(status='active', failures=0, stagnant=0, retry_at=0, blockers=[])
+                task.update(status='active', failures=0, stagnant=0, retry_at=0, workflow_api_failures=0, blockers=[])
                 if args.note:
                     task['decisions'].append('User clarification: ' + args.note)
                     brain = ProjectMemory(config)
@@ -245,6 +317,19 @@ def main():
                 if not args.service and not args.no_browser:
                     if open_studio(state, config) is None:
                         print('Studio is not ready; inspect status and local mastra.log.')
+                return
+            if args.detach:
+                if args.once or args.service:
+                    raise ValueError('--detach cannot be combined with --once or --service')
+                selection = ['--config' if config.get('_legacy') else '--project', config['_path']]
+                argv = [sys.executable, str(Path(__file__).parents[1] / 'bin/dotagent'), *selection,
+                        'start', '--host', args.host, '--service']
+                with (state.root / 'supervisor.log').open('a') as log:
+                    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                if not args.no_browser:
+                    if open_studio(state, config) is None:
+                        raise RuntimeError('background startup not ready; inspect supervisor.log')
+                print('Background supervisor requested. Use status to inspect progress.')
                 return
             supervise(state, config, args.host, args.once, browser=not args.service and not args.no_browser)
     except KeyboardInterrupt:

@@ -11,7 +11,7 @@ import uuid
 from .state import State, atomic, redact
 from .runtime import perform, reconcile, recover_child
 from .environment import Environment, revision
-from .integrations import Jira, select_ticket
+from .tasks import intake
 from .hosts import Interrupted
 
 
@@ -19,12 +19,12 @@ def view(state, task):
     evidence = sorted({(e['criterion'], e['revision']) for e in task['evidence'] if e['exit_code'] == 0})
     content = revision(task['worktree']) if task.get('worktree') and Path(task['worktree']).exists() else ''
     progress = hashlib.sha256(json.dumps([content, evidence, task.get('verified_revision'),
-                                         task['delivery']], sort_keys=True).encode()).hexdigest()
+                                         task['delivery'], task.get('instructions_ack', 0)], sort_keys=True).encode()).hexdigest()
     return dict(ticket=task['id'], runId=task['workflow_run'], phase=task['phase'],
                 worktree=task.get('worktree', ''), branch=task.get('branch', ''), host=task.get('host', ''),
                 status=task['status'], attempts=task['attempts'], failures=task['failures'],
                 stagnant=task['stagnant'], elapsed=task['elapsed'], cost=task['cost'],
-                costKnown=task['cost_known'], paused=bool(state.get('paused')),
+                costKnown=task['cost_known'], paused=bool(state.get('paused') or state.get('human:' + task['id'])),
                 retryAt=task.get('retry_at', 0), nextAction=task['next_action'],
                 blockers=task['blockers'], progress=progress, runnerLog=str(state.directory(task['id']) / 'worker.log'))
 
@@ -35,6 +35,11 @@ def dispatch(state, config, operation, data):
     else:
         state.set('heartbeat', time.time())
     if operation == 'control':
+        from .github_mentions import poll
+        try:
+            poll(state, config)
+        except Exception as error:
+            state.set('github_mentions_error', str(error))
         return {'revision': state.get('control_revision', 0), 'paused': bool(state.get('paused')),
                 'workers': state.get('preferred_workers', config.get('concurrency', 1))}
     if operation == 'next':
@@ -44,15 +49,21 @@ def dispatch(state, config, operation, data):
             for task in state.tasks():
                 env = task.get('environment', {})
                 if (task['status'] in ('blocked', 'cancelled', 'review') and env and not env.get('stopped_at')
+                        and not state.get('human:' + task['id'])
                         and task['id'] not in data.get('exclude', [])):
                     Environment(state, task, config['repository']).stop()
         excluded = set(data.get('exclude', []))
-        active = [t for t in state.tasks() if t['status'] == 'active' and t['id'] not in excluded
+        for saved in state.tasks():
+            notes = state.instructions(saved['id'])
+            if saved['id'] not in excluded and not state.get('human:' + saved['id']) and saved['status'] == 'review' and notes and notes[-1]['seq'] > saved.get('instructions_ack', 0):
+                saved.setdefault('workflow_history', []).append(saved.pop('workflow_run', None))
+                saved.update(status='active', phase='implement', attempts=0, failures=0, stagnant=0, retry_at=0, blockers=[])
+                state.save(saved)
+        active = [t for t in state.tasks() if t['status'] == 'active' and t['id'] not in excluded and not state.get('human:' + t['id'])
                   and t.get('retry_at', 0) <= time.time()]
         task = active[0] if active else None
         if not task:
-            tickets = Jira(state, config['jira'], config['host']).intake()
-            ticket = select_ticket(tickets, config['jira'], {t['id'] for t in state.tasks()})
+            ticket = intake(state, config)
             if ticket:
                 task = state.claim(ticket, config['repository']['path'])
         if not task:
@@ -74,6 +85,13 @@ def dispatch(state, config, operation, data):
         recover_child(state)
         return {}
     task = state.task(data['ticket'])
+    if operation == 'runner-ended' and task and task.get('workflow_run') != data.get('runId'):
+        # A human handoff can replace the run before the old child's close event.
+        current = state.get('iteration_worker')
+        if current and current['pid'] == data['pid']:
+            from .supervisor import recover_task
+            recover_task(state, config, 'Superseded task runner stopped', failed=False)
+        return {}
     if not task or task.get('workflow_run') != data.get('runId'):
         raise RuntimeError('Task does not belong to this workflow run')
     if operation == 'register-runner':
@@ -82,6 +100,9 @@ def dispatch(state, config, operation, data):
         if state.get('iteration_worker'):
             raise RuntimeError('Task runner already registered')
         state.set('iteration_worker', process_record(SimpleNamespace(pid=data['pid']), task['id'], data['argv'], state.directory(task['id'])))
+        if config.get('_path'):
+            from .terminal import open_terminal
+            open_terminal(state, config, task['id'])
         return {}
     if operation == 'runner-ended':
         from .supervisor import recover_task
@@ -114,7 +135,7 @@ def dispatch(state, config, operation, data):
         return view(state, task)
     if operation == 'perform':
         with state.lock('iteration'):
-            if state.get('paused') or task['status'] != 'active':
+            if state.get('paused') or state.get('human:' + task['id']) or task['status'] != 'active':
                 return {'interrupted': True}
             if data['phase'] != task['phase'] or data['attempt'] != task['attempts'] + 1:
                 return {'reconciled': True}
@@ -142,6 +163,8 @@ def dispatch(state, config, operation, data):
             state.handover(task)
             return outcome
     if operation == 'checkpoint':
+        if state.get('human:' + task['id']):
+            return view(state, task)
         receipt = data.get('receipt')
         if receipt and task.get('last_receipt') == receipt:
             return view(state, task)
@@ -159,6 +182,9 @@ def dispatch(state, config, operation, data):
         if receipt:
             task['last_receipt'] = receipt
             task.pop('pending_result', None)
+        instructions = state.instructions(task['id'])
+        if task['status'] == 'review' and instructions and instructions[-1]['seq'] > task.get('instructions_ack', 0):
+            task.update(status='active', phase='implement', next_action='Apply new user instructions')
         if task['status'] == 'review' and task['delivery'].get('pr'):
             from .memory import ProjectMemory
             memory = ProjectMemory(config)

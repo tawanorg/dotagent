@@ -102,7 +102,7 @@ def resolve_config(config_path=None, project=None, cwd=None, config_home=None, s
     config = _read(selected)
     if not legacy:
         # Repository and Jira settings always belong to the selected project.
-        defaults = {k: v for k, v in global_config.items() if k not in ('repository', 'jira', 'state_dir', 'project_name', 'studio') and not k.startswith('_')}
+        defaults = {k: v for k, v in global_config.items() if k not in ('repository', 'jira', 'tasks', 'github_mentions', 'state_dir', 'project_name', 'studio') and not k.startswith('_')}
         config = _merge(defaults, config)
     repository = config.setdefault('repository', {})
     path = Path(repository.get('path', '.')).expanduser()

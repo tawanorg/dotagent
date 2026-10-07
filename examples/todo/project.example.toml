@@ -1,0 +1,22 @@
+project_name = "Todo demo"
+[tasks]
+provider = "local"
+poll_seconds = 30
+# Optional remote triggers from your phone:
+[github_mentions]
+enabled = false
+allowed_users = ["YOUR_GITHUB_LOGIN"]
+poll_seconds = 30
+[repository]
+path = "/absolute/path/to/your/todo-repository"
+github = "YOUR_GITHUB_LOGIN/todo-demo"
+base = "origin/main"
+pr_base = "main"
+compose_files = ["compose.json"]
+app_port = "app:8080"
+services = ["app"]
+checks = [{argv=["node","--test"], cwd="."}]
+# Use an installed Playwright package accessible to the worker, outside tracked source.
+playwright_package = "/absolute/path/to/node_modules/@playwright/test"
+cpus_per_service = 0.5
+memory_per_service = "256m"

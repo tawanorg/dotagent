@@ -1,4 +1,22 @@
-# Mastra / project brain validation — 7 October 2026
+# Conversational tasks, GitHub mentions and terminal handoff — 7 October 2026
+
+- Python regression suite: 40 passed. Mastra workflow suite: 3 passed. TypeScript typecheck, production Studio build, Python compile, browser/render syntax checks and Todo baseline test passed.
+- New tests cover plain-language intake without Jira, durable guidance, authorized GitHub mentions with review context, duplicate polling, source-independent followups, cross-project port reservations and exclusive human takeover.
+- Terminal tests stop a real subprocess on human hold, prevent duplicate writers, retain inherited ownership locks after launcher exit, tolerate supervisor recovery with a human-held lock, clear late runner registrations and reset crash budgets on explicit return.
+- Native Codex 0.160.1 execution returned structured output, then its exact saved session reopened in the interactive TUI. An older daemon-backed Todo session failed bounded-history resume; new execution and interactive resume use supported `--no-daemon` ownership. Claude's resume contract was checked against installed CLI and official documentation; its interactive UI was not exercised.
+- Actual Todo issue: https://github.com/tawanorg/dotagent-todo-demo/issues/1. The authorized mention was polled, Codex implemented filters in its owned worktree, seven local checks passed, and actual before/after browser evidence passed screenshot review. The task is currently held in a native human Codex session at delivery; no completed Todo PR is claimed.
+- Five demo/promotion images were uploaded to https://github.com/tawanorg/dotagent/pull/1. All five decoded in the actual PR page (1672×941, three 1600×1000, and 2400×1756). README embeds stable attachment URLs. Screenshots remain outside Git; promotional artwork and the API-backed issue report are labelled.
+- Native Terminal opened successfully. This environment's Computer Use tool denies Terminal inspection, so no native Terminal screenshot was captured. Actual app interaction was inspected with Argent.
+- The configured Todo supervisor and Studio at http://127.0.0.1:14200/workflows remain running. Coterie's paused service was preserved. Physical sleep/reboot was not forced.
+
+Receipts and shareable image ZIP: `~/.local/state/dotagent-todo-demo-evidence/`.
+Native session receipt: `~/.local/state/dotagent-terminal-validation/`.
+Claude slash execution remains unverified interactively. The Codex skill was found
+by a real native host. An initial strict read-only status failure was fixed by
+opening SQLite read-only for status/show/studio; a native read-only Codex session
+then ran `dotagent --project todo-demo status` successfully.
+
+## Earlier Mastra / project brain validation
 
 - `npm run typecheck`, `npm test` (3 tests), `python3 -m unittest discover -s tests -p 'test_*.py'` (32 tests), and `npm run build` passed (Mastra core 1.74.0).
 - Real workflow tests cover fresh scheduler dispatch, failed verification/repair, replacement-instance resume, and repeated no-progress suspension.

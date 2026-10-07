@@ -28,14 +28,14 @@ test('Ralph repairs a failed verification and only finishes after delivery evide
         return { action: 'verify', progress: String(actions.length), uiChanged: false };
       if (input.phase === 'verify') return { passed: ++checks > 1, uiChanged: false, progress: String(actions.length) };
       if (input.phase === 'deliver') return { pr: 'https://github.com/example/repo/pull/1', artifacts: false, progress: 'delivered' };
-      if (input.phase === 'jira') return { complete: true, progress: 'review' };
+      if (input.phase === 'source-sync') return { complete: true, progress: 'review' };
     }
     throw new Error('Unexpected operation ' + op);
   };
   const mastra = createDotagent({ root, bridge, limits: { maxIterations: 20 } });
   await runTicket(mastra.getWorkflow('dotagent'), task, bridge, 'fixture');
   assert.equal(task.status, 'review');
-  assert.deepEqual(actions, ['plan', 'verify', 'implement', 'verify', 'deliver', 'jira']);
+  assert.deepEqual(actions, ['plan', 'verify', 'implement', 'verify', 'deliver', 'source-sync']);
   await mastra.observability?.flush();
   await mastra.shutdown();
 });
@@ -61,7 +61,7 @@ test('a blocked task resumes in a replacement Mastra instance without repeating 
       if (input.phase === 'implement') return { action: 'verify' };
       if (input.phase === 'verify') return { passed: true, uiChanged: false, progress: 'verified' };
       if (input.phase === 'deliver') return { pr: 'https://github.com/example/repo/pull/2', artifacts: false, progress: 'delivered' };
-      if (input.phase === 'jira') return { complete: true };
+      if (input.phase === 'source-sync') return { complete: true };
     }
     throw new Error('Unexpected operation ' + op);
   };
@@ -73,7 +73,7 @@ test('a blocked task resumes in a replacement Mastra instance without repeating 
   mastra = createDotagent({ root, bridge });
   const replacement = await mastra.getWorkflow('dotagent').createRun({ runId: task.runId });
   assert.equal((await replacement.resume({ resumeData: {} })).status, 'success');
-  assert.deepEqual(actions, ['plan', 'implement', 'verify', 'deliver', 'jira']);
+  assert.deepEqual(actions, ['plan', 'implement', 'verify', 'deliver', 'source-sync']);
   assert.equal(task.status, 'review');
   await mastra.observability?.flush(); await mastra.shutdown();
 });

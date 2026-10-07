@@ -52,11 +52,12 @@ export function createDotagent(options: { root: string; bridge: Bridge; limits?:
     id: phase, inputSchema: envelope, outputSchema: envelope,
     execute: async ({ inputData, runId, tracingContext, abortSignal }) => {
       const { task } = inputData;
-      if (task.phase !== phase || task.status !== 'active') return inputData;
+      // Keep the persisted graph's legacy last-step ID/index for existing runs.
+      if ((task.phase !== phase && !(phase === 'jira' && task.phase === 'source-sync')) || task.status !== 'active') return inputData;
       const started = Date.now();
       let outcome: Record<string, any>;
       try {
-        outcome = await bridge('perform', { ticket: task.ticket, runId, phase, attempt: task.attempts + 1 });
+        outcome = await bridge('perform', { ticket: task.ticket, runId, phase: task.phase, attempt: task.attempts + 1 });
       } catch (error) {
         if (abortSignal?.aborted) throw error;
         outcome = { error: String(error) };
@@ -93,6 +94,8 @@ export function createDotagent(options: { root: string; bridge: Bridge; limits?:
         if (patch.failures >= limits.maxFailures) {
           patch.status = 'blocked'; patch.blockers = [outcome.error];
         }
+      } else if (outcome.guidance) {
+        patch.phase = 'implement'; patch.nextAction = 'Apply new user instructions before verification';
       } else if (outcome.stale) {
         patch.phase = 'verify'; patch.nextAction = 'Content changed; rerun required checks';
       } else if (task.phase === 'plan' || task.phase === 'implement') {
@@ -107,12 +110,12 @@ export function createDotagent(options: { root: string; bridge: Bridge; limits?:
         else if (outcome.blocked) { patch.status = 'blocked'; patch.blockers = [outcome.reason]; }
         else { patch.phase = 'implement'; patch.nextAction = 'Repair evidence: ' + outcome.reason; }
       } else if (task.phase === 'deliver') {
-        patch.phase = outcome.artifacts ? 'render' : 'jira';
+        patch.phase = outcome.artifacts ? 'render' : 'source-sync';
         patch.nextAction = 'Verify delivery: ' + outcome.pr;
       } else if (task.phase === 'render') {
-        if (outcome.rendered) patch.phase = 'jira';
+        if (outcome.rendered) patch.phase = 'source-sync';
         else { patch.status = 'blocked'; patch.blockers = ['Screenshot rendering unverified: ' + outcome.reason]; }
-      } else if (task.phase === 'jira') {
+      } else if (task.phase === 'source-sync' || task.phase === 'jira') {
         if (!outcome.complete) throw new Error('Delivery evidence incomplete');
         patch.phase = 'review'; patch.status = 'review'; patch.nextAction = 'Await human PR review';
       } else throw new Error('Unknown task phase ' + task.phase);
@@ -133,7 +136,7 @@ export function createDotagent(options: { root: string; bridge: Bridge; limits?:
   for (const phase of phases) iteration = iteration.then(phaseStep(phase));
   const cycle = iteration.then(persist).commit();
   const dotagent = createWorkflow({
-    id: 'dotagent', description: 'Assigned ticket → Ralph iterations → verified draft PR',
+    id: 'dotagent', description: 'Task → Ralph iterations → verified draft PR',
     inputSchema: request, outputSchema: checkpoint,
     options: { autoRestartActiveRuns: false, shouldPersistSnapshot: () => true },
   }).dowhile(cycle, async ({ inputData }) => !['review', 'cancelled'].includes(inputData.status)).commit();

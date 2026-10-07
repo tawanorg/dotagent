@@ -24,6 +24,9 @@ class EngineerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        resources = patch.dict(os.environ, {'DOTAGENT_RESOURCE_DIR':str(self.root / 'resources')})
+        resources.start()
+        self.addCleanup(resources.stop)
         self.state = State(self.root / 'state')
         self.repo = self.root / 'repo'
         self.repo.mkdir()

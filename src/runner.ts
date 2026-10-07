@@ -52,7 +52,7 @@ try {
         if(task && task.status==='active' && task.retryAt<=Date.now()/1000) {
           await launch(task);
           wait=0; // Fill all configured slots without an arbitrary hard cap.
-        } else if(!task && workers.size===0) wait=config.jira.poll_seconds*1000;
+        } else if(!task && workers.size===0) wait=(config.tasks?.poll_seconds ?? config.jira?.poll_seconds ?? 300)*1000;
       }
     } catch(error) {
       await bridge('intake-error',{error:String(error)});

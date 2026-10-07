@@ -38,14 +38,19 @@ def atomic(path, value):
 class State:
     SCOPED_KEYS = {'worker', 'heartbeat', 'executing_phase', 'iteration_worker', 'bridge_worker'}
 
-    def __init__(self, root, scope=None):
+    def __init__(self, root, scope=None, readonly=False):
         if scope is not None and (not isinstance(scope, str) or not scope or len(scope) > 256):
             raise ValueError('scope must be a nonempty task identifier of at most 256 characters')
         self.scope = scope
         self._scope_hash = hashlib.sha256(scope.encode()).hexdigest() if scope is not None else None
         self.root = Path(root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.db = sqlite3.connect(self.root / 'state.sqlite', timeout=30)
+        if readonly and (self.root / 'state.sqlite').exists():
+            self.db = sqlite3.connect((self.root / 'state.sqlite').as_uri() + '?mode=ro', uri=True, timeout=30)
+            self.db.row_factory = sqlite3.Row
+            return
+        if not readonly:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.db = sqlite3.connect(':memory:' if readonly else self.root / 'state.sqlite', timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
@@ -61,8 +66,9 @@ class State:
             id TEXT PRIMARY KEY, amount TEXT NOT NULL, settled TEXT);
         ''')
         self.db.commit()
-        os.chmod(self.root / 'state.sqlite', 0o600)
-        if scope is not None:
+        if not readonly:
+            os.chmod(self.root / 'state.sqlite', 0o600)
+        if scope is not None and not readonly:
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',
                                 (f'scope:{self._scope_hash}:identity', json.dumps(scope)))
@@ -82,7 +88,7 @@ class State:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise RuntimeError(f'{name} already running') from None
-            yield
+            yield f
 
     def get(self, key, default=None):
         row = self.db.execute('SELECT value FROM settings WHERE key=?', (self._key(key),)).fetchone()
@@ -144,6 +150,8 @@ class State:
 
     def claim(self, ticket, repo):
         key = ticket['key']
+        if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', key):
+            raise ValueError('task ID must contain 1–100 letters, digits, underscores or hyphens')
         task = dict(id=key, ticket=ticket, repo=repo, status='active', phase='plan',
                     attempts=0, failures=0, stagnant=0, elapsed=0, cost=0,
                     cost_known=True, criteria=[], decisions=[], assumptions=[], blockers=[],
@@ -153,6 +161,26 @@ class State:
             changed = self.db.execute('INSERT OR IGNORE INTO tasks VALUES (?,?,?,?)',
                                      (key, 'active', time.time(), json.dumps(task))).rowcount
         return task if changed else None
+
+    def instruct(self, key, text, identity=None):
+        if not self.task(key):
+            raise ValueError('unknown task')
+        if not isinstance(text, str) or not text.strip() or len(text) > 20000:
+            raise ValueError('instruction must contain 1–20000 characters')
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            marker = 'instruction:' + identity if identity else None
+            if marker and self.get(marker):
+                return
+            self.db.execute('INSERT INTO events(task,at,kind,data) VALUES (?,?,?,?)',
+                            (key, time.time(), 'user-instruction', json.dumps({'text':redact(text.strip())})))
+            if marker:
+                self.db.execute('INSERT INTO settings VALUES (?,?)', (marker, 'true'))
+        self.set('control_revision', time.time())
+
+    def instructions(self, key):
+        return [dict(seq=r['seq'], at=r['at'], **json.loads(r['data'])) for r in self.db.execute(
+            "SELECT seq,at,data FROM events WHERE task=? AND kind='user-instruction' ORDER BY seq", (key,))]
 
     def task(self, key):
         row = self.db.execute('SELECT data FROM tasks WHERE id=?', (key,)).fetchone()
@@ -188,7 +216,7 @@ class State:
             f"Branch: {task.get('branch', 'not provisioned')}",
             f"Next action: {task['next_action']}",
             'Load handover.json for criteria, decisions, assumptions, blockers, evidence and ownership.',
-            'Reconcile Git, services, PR and Jira before trusting checkpoint claims.',
+            'Reconcile Git, services, PR and configured task source before trusting checkpoint claims.',
             'Suggested skills: repository-specific skills; diagnosing-bugs for unexplained failures;',
             'tdd for behavior changes; code-review for requirements review.',
         ]) + '\n')

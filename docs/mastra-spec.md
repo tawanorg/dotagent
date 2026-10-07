@@ -13,3 +13,13 @@
 - CLI remains simple; local Studio shows graph, runs and traces without bypassing execution ownership.
 - Test failure/repair, suspend/resume, duplicate/stale execution, process recovery, project/memory isolation and actual Studio interaction.
 - Commit, push and deliver a draft PR; no merge/deploy or business-ticket completion claim.
+
+## Conversational and remote work
+
+- Host entry points: Claude `/dotagent`; Codex `$dotagent` or `/skills`, using one interaction guide.
+- Plain-language local tasks are default; Jira remains optional and legacy configs stay compatible.
+- Durable follow-up instructions and explicit project guidance survive restart and stale workers.
+- Opt-in GitHub mentions accept allowlisted authors, capture issue/PR/review context, deduplicate and update the correct PR.
+- Poll independently of worker capacity; one bad trigger must not block other work.
+- Runnable Todo example with real issue/mention, actual browser evidence and README screenshots.
+- Separate promotional artwork from actual product screenshots; originals remain outside Git.

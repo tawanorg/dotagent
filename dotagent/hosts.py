@@ -51,7 +51,7 @@ def codex_mcp_args(only):
 def host_command(host, cwd, directory, schema, config, bridge=False):
     if host == 'codex':
         atomic(directory / 'schema.json', schema)
-        return ['codex', 'exec', '--json', '--color', 'never', '-C', str(cwd),
+        return ['codex', '--no-daemon', 'exec', '--json', '--color', 'never', '-C', str(cwd),
                 '-s', 'read-only' if bridge else config.get('codex_sandbox', 'workspace-write'),
                 '--add-dir', str(directory), '--output-schema', str(directory / 'schema.json'),
                 '-o', str(directory / 'result.json'),
@@ -104,7 +104,7 @@ def execute(host, prompt, cwd, directory, schema, config, state, task=None, brid
                 if size != last_size:
                     last_size, last_activity = size, now
                 task_state = state.task(task) if task else None
-                if state.get('paused') or (task_state and task_state['status'] == 'cancelled'):
+                if state.get('paused') or state.get('human:' + str(task)) or (task_state and task_state['status'] == 'cancelled'):
                     raise Interrupted('paused or cancelled')
                 if now - started > timeout:
                     raise RuntimeError('worker time limit; saved handover will be loaded on retry')

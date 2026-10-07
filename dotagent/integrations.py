@@ -115,7 +115,7 @@ class GitHub:
                        timeout=180, check=check)
 
     def find(self):
-        rows = json.loads(self.gh('pr', 'list', '--head', self.task['branch'], '--state', 'all',
+        rows = json.loads(self.gh('pr', 'list', '--head', self.task.get('target_pr', {}).get('branch', self.task['branch']), '--state', 'all',
                                   '--json', 'number,url,body,isDraft,state,headRefOid').stdout)
         if len(rows) > 1:
             raise RuntimeError('multiple PRs for task branch; reconcile manually')
@@ -157,7 +157,7 @@ class GitHub:
 
     def body(self, attachments, pending=None):
         task = self.task
-        lines = [f"<!-- dotagent:{task['id']} -->", task['ticket']['url'], '',
+        lines = [f"<!-- dotagent:{task['id']} -->", task['ticket'].get('url') or f"Direct request: {task['id']}", '',
                  task['summary'], '', task['implementation'], '', '### Local verification', '',
                  f"Commit: `{task['commit']}`; content fingerprint: `{task['verified_revision']}`.", '']
         for evidence in task['evidence']:
@@ -188,16 +188,17 @@ class GitHub:
         task = self.task
         self.validate_remote()
         pr = self.find()
-        if pr and (pr['state'] != 'OPEN' or not pr['isDraft']):
+        if pr and (pr['state'] != 'OPEN' or (not pr['isDraft'] and pr['number'] != task.get('target_pr', {}).get('number'))):
             raise RuntimeError('existing PR is closed or no longer draft; awaiting human review')
         if revision(task['worktree']) != task['verified_revision']:
             raise RuntimeError('delivery requires verification of current content')
         self.commit()
         if revision(task['worktree']) != task['verified_revision']:
             raise RuntimeError('commit no longer matches verification')
-        command(['git', '-C', task['worktree'], 'push', '-u', 'origin', task['branch']], timeout=180)
+        destination = 'HEAD:' + task['target_pr']['branch'] if task.get('target_pr') else task['branch']
+        command(['git', '-C', task['worktree'], 'push', '-u', 'origin', destination], timeout=180)
         pr = self.find()
-        if pr and (pr['state'] != 'OPEN' or not pr['isDraft']):
+        if pr and (pr['state'] != 'OPEN' or (not pr['isDraft'] and pr['number'] != task.get('target_pr', {}).get('number'))):
             raise RuntimeError('existing PR is closed or no longer draft; awaiting human review')
         bodyfile = self.directory / 'pr-body.md'
         attachments = self.attachment_urls(pr['body']) if pr else {}
@@ -244,7 +245,7 @@ class GitHub:
         write_body()
         self.gh('pr', 'edit', str(pr['number']), '--body-file', str(bodyfile))
         pr = self.find()
-        if pr['headRefOid'] != task['commit'] or not pr['isDraft']:
+        if pr['headRefOid'] != task['commit'] or (not pr['isDraft'] and pr['number'] != task.get('target_pr', {}).get('number')):
             raise RuntimeError('PR head/draft read-back mismatch')
         task['delivery']['attachments'] = attachments
         task['delivery']['body_verified'] = True

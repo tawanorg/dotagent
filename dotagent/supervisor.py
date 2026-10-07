@@ -14,6 +14,7 @@ import webbrowser
 from .hosts import command, process_record, stop_group
 from .runtime import recover_child, recover_iteration
 from .state import State, atomic
+from .tasks import source_config
 
 
 def open_studio(state, config, timeout=30):
@@ -75,6 +76,12 @@ def recover_task(state, config, reason, failed=True):
                 os.killpg(record['pid'], signal.SIGKILL)
             except ProcessLookupError:
                 pass
+    # Human takeover can acquire the lock while the automation group is reaped.
+    # Keep the durable hold; returning to automation separately requires both locks.
+    if state.scope and state.get('human:' + state.scope):
+        for key in ('iteration_worker', 'executing_phase', 'bridge_worker'):
+            state.set(key, None)
+        return
     # A surviving action must never overlap its replacement.
     with state.lock('iteration'):
         if phase:
@@ -184,7 +191,7 @@ def supervise(state, config, host, once=False, browser=False):
                         if phase and time.time() - phase['started'] > config['limits']['iteration_wall_seconds']:
                             raise RuntimeError('Engineering phase exceeded wall time; restarting from durable checkpoint')
                         heartbeat = max(state.get('scheduler_heartbeat', 0), state.get('heartbeat', 0))
-                        if time.time() - heartbeat > max(config['jira']['poll_seconds'] + 30, config['host'].get('stall_seconds', 600)):
+                        if time.time() - heartbeat > max(source_config(config)['poll_seconds'] + 30, config['host'].get('stall_seconds', 600)):
                             raise RuntimeError('Mastra heartbeat stalled')
                         time.sleep(1)
                     if once and processes[1].poll() == 0:
