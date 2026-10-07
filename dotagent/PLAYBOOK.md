@@ -1,7 +1,8 @@
-# Personal software dotagent
+# Dotagent engineering playbook
 
 One task, one worktree. Own implementation through observable verification. The
-supervisor owns lifecycle, durable state, resource allocation and external delivery;
+Mastra workflow owns lifecycle and durable checkpoints; Python adapters own resource
+allocation and external delivery;
 Claude Code or Codex owns a bounded engineering iteration using its native login.
 
 ## Understand

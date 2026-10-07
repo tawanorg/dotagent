@@ -11,14 +11,14 @@ import tomllib
 from .environment import Environment
 from .hosts import command
 from .integrations import remote_matches
-from .runtime import supervise, work
+from .supervisor import supervise
+from .projects import resolve_config
+from .memory import ProjectMemory
 from .state import State, atomic
 
 
-def load_config(path):
-    path = Path(path).expanduser().resolve()
-    config = tomllib.loads(path.read_text())
-    config['_path'] = str(path)
+def load_config(path=None, project=None):
+    config = resolve_config(config_path=path, project=project)
     config.setdefault('state_dir', '~/.local/state/dotagent')
     config.setdefault('host', {})
     config.setdefault('limits', {})
@@ -72,6 +72,9 @@ def doctor(config, host):
     if config['limits'].get('max_spend_usd') is not None:
         results.append({'check': 'hard dollar cap requires cost-reporting hosts for worker AND Jira bridge',
                         'passed': host == 'claude' and config['jira'].get('host', 'codex') == 'claude'})
+    root = Path(__file__).resolve().parents[1]
+    results.append({'check': 'Mastra build and scheduler', 'passed':
+                    (root / '.mastra/output/index.mjs').exists() and (root / 'dist/src/runner.js').exists()})
     for row in results:
         print(('PASS ' if row['passed'] else 'FAIL ') + row['check'])
     print('Jira OAuth and browser permissions are checked by live calls; registration alone is not proof.')
@@ -81,11 +84,14 @@ def doctor(config, host):
 def install_service(config, host):
     executable = str(Path(__file__).parents[1] / 'bin' / 'dotagent')
     if sys.platform == 'darwin':
-        target = Path.home() / 'Library/LaunchAgents/dev.dotagent.plist'
+        label = 'dev.dotagent.' + config.get('_project_id', 'default')
+        target = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
         state = Path(config['state_dir']).expanduser()
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        data = {'Label': 'dev.dotagent',
-                'ProgramArguments': [sys.executable, executable, '--config', config['_path'],
+        # Preserve project selection; CLI resolves global defaults with the project file.
+        selection = ['--project', config['_path']] if not config.get('_legacy') else ['--config', config['_path']]
+        data = {'Label': label,
+                'ProgramArguments': [sys.executable, executable, *selection,
                                      'start', '--host', host, '--service'],
                 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 30,
                 'EnvironmentVariables': {'PATH': ':'.join(dict.fromkeys([
@@ -107,7 +113,8 @@ def install_service(config, host):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(prog='dotagent')
-    parser.add_argument('--config', default=os.environ.get('DOTAGENT_CONFIG', os.environ.get('ENGINEER_CONFIG', '~/.config/dotagent/config.toml')))
+    parser.add_argument('--config', default=os.environ.get('DOTAGENT_CONFIG', os.environ.get('ENGINEER_CONFIG')))
+    parser.add_argument('--project', help='Project name, repository directory or project TOML')
     commands = parser.add_subparsers(dest='action', required=True)
     for name in ('start', 'doctor', 'install-service'):
         sub = commands.add_parser(name)
@@ -122,11 +129,37 @@ def main():
     resume.add_argument('--note', help='Persist a user decision or clarification in the handover')
     commands.add_parser('cancel').add_argument('task')
     commands.add_parser('cleanup').add_argument('task')
-    commands.add_parser('_work').add_argument('task')
+    memory = commands.add_parser('memory')
+    memory.add_argument('operation', choices=['list', 'search', 'remember', 'retire', 'correct', 'history'])
+    memory.add_argument('text', nargs='?', default='')
+    memory.add_argument('--source', default='user correction')
+    memory.add_argument('--kind', default='fact')
+    memory.add_argument('--id', help='Existing memory to correct')
+    memory.add_argument('--reason', default='Explicit user correction')
+    commands.add_parser('studio')
+
     args = parser.parse_args()
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, args.project)
         state = State(config['state_dir'])
+        if args.action == 'memory':
+            brain = ProjectMemory(config)
+            if args.operation == 'remember':
+                result = brain.remember(args.text, source=args.source, kind=args.kind)
+            elif args.operation == 'search':
+                result = brain.search(args.text)
+            elif args.operation == 'retire':
+                result = brain.retire(args.text, reason=args.reason)
+            elif args.operation == 'correct':
+                result = brain.supersede(args.id, args.text, source=args.source, reason=args.reason)
+            else:
+                result = brain.list(include_retired=args.operation == 'history')
+            print(json.dumps(result, indent=2))
+            brain.close()
+            return
+        if args.action == 'studio':
+            print(state.get('studio_url', f"http://127.0.0.1:{config.get('studio', {}).get('port', 4111)}"))
+            return
         if args.action == 'doctor':
             raise SystemExit(0 if doctor(config, args.host) else 1)
         if args.action == 'status':
@@ -138,7 +171,8 @@ def main():
                 print(json.dumps({'paused': state.get('paused', False), 'tasks': rows,
                                   'intake_error': state.get('intake_error')}, indent=2))
             else:
-                print('Paused' if state.get('paused') else 'Ready')
+                print(config.get('project_name', 'dotagent') + ': ' + ('Paused' if state.get('paused') else 'Ready'))
+                print('Studio: ' + state.get('studio_url', 'not started'))
                 for row in rows:
                     print(f"{row['ticket']} | {row['status']}/{row['phase']} | {row['next_action']}")
                     for blocker in row['blockers']:
@@ -156,13 +190,20 @@ def main():
                     raise RuntimeError('unknown task')
                 if task['status'] == 'review':
                     raise RuntimeError('task is already awaiting review')
+                if task.pop('workflow_failed', False):
+                    task.setdefault('workflow_history', []).append(task.pop('workflow_run'))
                 task.update(status='active', failures=0, stagnant=0, retry_at=0, blockers=[])
                 if args.note:
                     task['decisions'].append('User clarification: ' + args.note)
+                    brain = ProjectMemory(config)
+                    brain.remember(args.note, source=task['id'], kind='decision')
+                    brain.close()
                 if task['phase'] == 'blocked':
                     task['phase'] = 'implement' if task['criteria'] else 'plan'
                 state.save(task, allow_reactivate=True)
             state.set('paused', False)
+            state.set('process_failures', 0)
+            state.set('control_revision', __import__('time').time())
             print('Resumed. Start the supervisor if it is not installed as a service.')
         elif args.action in ('cancel', 'cleanup'):
             task = state.task(args.task)
@@ -177,8 +218,6 @@ def main():
                     raise RuntimeError('pause/cancel task before cleanup')
                 Environment(state, task, config['repository']).stop()
                 print('Owned services stopped. Worktree and volumes preserved.')
-        elif args.action == '_work':
-            work(state, config, args.task)
         elif args.action == 'install-service':
             install_service(config, args.host)
         elif args.action == 'start':
@@ -187,6 +226,8 @@ def main():
             if not args.service:
                 state.set('preferred_host', args.host)
                 state.set('paused', False)
+                state.set('process_failures', 0)
+                state.set('control_revision', __import__('time').time())
             try:
                 with state.lock():
                     pass

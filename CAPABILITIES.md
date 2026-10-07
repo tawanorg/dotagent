@@ -1,8 +1,18 @@
 # Dotagent capability research — 2026-10-07
 
-## Recommendation
+## Current architecture
 
-Use one Python stdlib supervisor/state machine (SQLite + subprocess + process lock) with native Codex/Claude CLI workers. It owns ticket lifecycle, ownership, verification ledger, bounded retries, budgets and delivery reconciliation. Native hosts own model/tool execution and context management. Canonical playbook is versioned source; operational checkpoints are external durable files; project facts and personal preference proposals are separate. No Mastra or Hermes runtime needed for one laptop and one active task. Both can be reconsidered for hosted orchestration or messaging; neither eliminates the required Git/Docker reconciliation and verification gates.
+Mastra 1.74.0 owns orchestration, with libSQL 1.25.0 for persisted snapshots and
+observability 1.18.3 for stored traces. CLI/build tooling is Mastra 1.32.1.
+Native Claude Code/Codex still own authentication and execution. Python adapters
+retain resource/evidence/remote-mutation ownership; Python supervision now handles
+processes only. Project memory is provenance-backed SQLite, isolated per repository.
+
+This supersedes the original Python-only recommendation below. Mastra was added
+for the user's explicit requirement to organise/inspect workflows in Studio.
+The canonical skill was read from mastra-ai/skills; implementation used installed
+package types/docs, including restart versus resume, snapshot persistence,
+autoRestartActiveRuns=false and native host usage trace events.
 
 ## Installed capabilities actually inspected
 
@@ -35,7 +45,7 @@ Official supported CLI path makes private upload APIs/browser session token extr
 
 ## Evaluated alternatives
 
-Mastra current official workflow docs offer structured steps, storage snapshots, suspension/resumption, streaming and workflow runners. Could wrap native child processes, but still needs external process supervision and custom side-effect reconciliation. Adding Node/Mastra/storage adapter solely to run one sequential laptop worker overlaps stdlib state store without reducing required engineering. Dedicated skill is absent; no Mastra API invented or used.
+Initial evaluation: Mastra current official workflow docs offer structured steps, storage snapshots, suspension/resumption, streaming and workflow runners. Could wrap native child processes, but still needs external process supervision and custom side-effect reconciliation. Adding Node/Mastra/storage adapter solely to run one sequential laptop worker overlaps stdlib state store without reducing required engineering. Dedicated skill is absent; no Mastra API invented or used.
 
 Hermes official repository documentation describes persistent sessions/memory/skills and an optional Codex app-server runtime. That mode delegates terminal/files/MCP execution to Codex while Hermes owns shell/session database/memory. This is a real supported integration, not a hypothetical one, but adds a second lifecycle/memory owner for this request. Hermes documentation also describes borrowing native CLI logins and warns of rotating refresh-token collisions. Do not adopt that mechanism: native CLI workers keep native authentication and shared playbook. Hermes session imports are migration features, not equivalent task lifecycle or verified delivery.
 
