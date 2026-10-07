@@ -1,0 +1,14 @@
+# Add these sections to a configured project's TOML. This is not a complete
+# repository configuration; start with config.example.toml.
+[tasks]
+provider = "jira"
+poll_seconds = 300
+
+[jira]
+host = "codex" # Native CLI with an authenticated local Atlassian MCP connection.
+site = "https://YOUR_SITE.atlassian.net"
+jql = 'assignee = currentUser() AND statusCategory != Done ORDER BY priority DESC, updated ASC'
+eligible_statuses = ["In Progress", "Ready"] # Match your project's workflow.
+active_statuses = ["In Progress"]
+priorities = ["Highest", "High", "Medium", "Low", "Lowest"]
+max_tickets = 100

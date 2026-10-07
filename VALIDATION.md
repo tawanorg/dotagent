@@ -1,13 +1,22 @@
-# Conversational tasks, GitHub mentions and terminal handoff — 7 October 2026
+# dotagent validation — 7 October 2026
 
-- Python regression suite: 40 passed. Mastra workflow suite: 3 passed. TypeScript typecheck, production Studio build, Python compile, browser/render syntax checks and Todo baseline test passed.
+## Public overview and reusable project setup
+
+- README presents the developer workflow, real demo captures, native handoff and the installed technology stack; detailed commands remain in docs/usage.md.
+- The 11-node Mermaid workflow parsed and rendered in Chromium. A shareable PNG was uploaded as a PR attachment; SVG and PNG originals remain outside Git. Documentation file links resolve.
+- Project-specific runtime hooks were extracted into a private local adapter. The public runtime loads an explicitly configured trusted Python file; no project identity is built in. Existing private configuration was migrated without unpausing services.
+- Adapter regression covers allocated ports, Compose environment, host checks, readiness command ownership and rejection of a relative adapter path. All 41 Python tests pass.
+
+## Conversational tasks, GitHub mentions and terminal handoff
+
+- Python regression suite: 41 passed. Mastra workflow suite: 3 passed. TypeScript typecheck, production Studio build, Python compile, browser/render syntax checks and Todo baseline test passed.
 - New tests cover plain-language intake without Jira, durable guidance, authorized GitHub mentions with review context, duplicate polling, source-independent followups, cross-project port reservations and exclusive human takeover.
 - Terminal tests stop a real subprocess on human hold, prevent duplicate writers, retain inherited ownership locks after launcher exit, tolerate supervisor recovery with a human-held lock, clear late runner registrations and reset crash budgets on explicit return.
 - Native Codex 0.160.1 execution returned structured output, then its exact saved session reopened in the interactive TUI. An older daemon-backed Todo session failed bounded-history resume; new execution and interactive resume use supported `--no-daemon` ownership. Claude's resume contract was checked against installed CLI and official documentation; its interactive UI was not exercised.
 - Actual Todo issue: https://github.com/tawanorg/dotagent-todo-demo/issues/1. The authorized mention was polled, Codex implemented filters in its owned worktree, seven local checks passed, and actual before/after browser evidence passed screenshot review. The task is currently held in a native human Codex session at delivery; no completed Todo PR is claimed.
 - Five demo/promotion images were uploaded to https://github.com/tawanorg/dotagent/pull/1. All five decoded in the actual PR page (1672×941, three 1600×1000, and 2400×1756). README embeds stable attachment URLs. Screenshots remain outside Git; promotional artwork and the API-backed issue report are labelled.
 - Native Terminal opened successfully. This environment's Computer Use tool denies Terminal inspection, so no native Terminal screenshot was captured. Actual app interaction was inspected with Argent.
-- The configured Todo supervisor and Studio at http://127.0.0.1:14200/workflows remain running. Coterie's paused service was preserved. Physical sleep/reboot was not forced.
+- The configured Todo supervisor and Studio at http://127.0.0.1:14200/workflows remain running. An unrelated paused project service was preserved. Physical sleep/reboot was not forced.
 
 Receipts and shareable image ZIP: `~/.local/state/dotagent-todo-demo-evidence/`.
 Native session receipt: `~/.local/state/dotagent-terminal-validation/`.
@@ -26,7 +35,7 @@ then ran `dotagent --project todo-demo status` successfully.
 - Studio workflow graph, two labelled worker runs and saved suspension inspected in Chromium; no console errors or failed requests observed. Screenshot originals remain outside Git.
 - Draft PR https://github.com/tawanorg/dotagent/pull/1 contains two uploaded attachments beside manual testing step 3. Both decode at 1600×1000 in GitHub's authenticated API `body_html`. The private PR page returned 404 in the unsigned browser; full signed-in PR-page rendering remains unverified.
 - Executable code tested at `be5cb0b`; subsequent validation-only documentation changes do not change that code.
-- Interactive dashboard-open test passes; the OS browser opened the registered Coterie dashboard at http://127.0.0.1:46473/workflows. No backlog execution was unpaused.
+- Interactive dashboard-open test passes; the OS browser opened the registered project dashboard at http://127.0.0.1:46473/workflows. No backlog execution was unpaused.
 - Real parent scheduler launched two task workers concurrently; both verified their live Docker apps and suspended at the configured fixture iteration limit. Read-only GitHub lookup used a fixture; no Jira/model calls were made.
 - Twelve concurrent subprocesses could not over-reserve the shared USD budget; settlement retries did not double-refund it.
 - Recovery regression checks cover stopping the orphan scheduler before workers and detecting stalled Mastra calls outside engineering phases.
@@ -35,7 +44,7 @@ then ran `dotagent --project todo-demo status` successfully.
 
 Current receipts: ~/.local/state/dotagent-mastra-validation/ and
 ~/.local/state/dotagent-validation/1791342389491629000/. This is a synthetic lifecycle
-and application fixture, not a completed business Jira ticket. QB-628's approved
+and application fixture, not a completed business Jira ticket. The pilot ticket’s approved
 production-copy verification remains unavailable. Physical laptop sleep/reboot was
 not forced. Native host/GitHub/Jira checks below were performed before the migration;
 no new real Jira ticket was automatically executed during this upgrade.
@@ -63,13 +72,13 @@ Observed results on this Mac; fixture checks are not production-ticket completio
 | Claude adapter | Native subscription-authenticated print mode returned structured output and usage |
 | Native repair iteration | Codex reproduced `2 !== 1`, repaired the counter, added a regression check; independent runtime browser verification passed |
 | Docker/browser fixture | Two task projects used separate ports and volumes; one task's writes/stop did not affect the other |
-| Coterie adapter | Full isolated stack built successfully: eight healthy services, four completed setup jobs, four owned volumes and a separate test database |
+| Private project adapter | Full isolated stack built successfully: eight healthy services, four completed setup jobs, four owned volumes and a separate test database |
 | Failed verification | Injected `+2` behavior failed the expected `+1` browser assertion; repair passed |
 | GitHub/Jira retry protocol | Regression checks covered partial upload reconciliation, one PR/upload on retry, stable Jira marker/read-back and preserving staged work |
 | Live GitHub delivery | Draft PR #3 created; both uploaded images rendered at 1280×900 |
-| Live Jira delivery | Retried QB-628 progress update reused comment 10782; no status transition |
+| Live Jira delivery | Retried pilot-ticket progress update reused its existing comment; no status transition |
 | Hard budget exhaustion | Prevented worker launch |
-| Full real Jira task | **Incomplete:** QB-628 requires production-copy migration verification; no approved sanitized snapshot was available |
+| Full real Jira task | **Incomplete:** The pilot ticket requires production-copy migration verification; no approved sanitized snapshot was available |
 | Physical sleep/reboot | Not forced; process restart and persisted pause were tested |
 
 Run the deterministic suite from the standalone dotagent checkout:
@@ -88,7 +97,7 @@ python3 tests/dotagent_live.py /absolute/path/to/node_modules/@playwright/test
 
 Local operational receipts, original images and detailed logs are outside Git under
 `~/.local/state/engineer-validation`, `engineer-real-ticket-validation`, and
-`engineer-coterie-validation`. These receipt paths predate the dotagent rename. The real intake read QB-628's description, comments,
+a private project validation directory. These receipt paths predate the dotagent rename. The real intake read the pilot ticket’s description, comments,
 attachments and three acceptance criteria; it retained the verification blocker.
 The user chose synthetic fixtures for runtime validation. No production dataset was
 copied, no Jira ticket was marked done, and no application change was represented

@@ -1,6 +1,7 @@
 """Worktrees and explicit, project-owned Compose resources."""
 import hashlib
 import json
+import runpy
 import os
 from pathlib import Path
 import shutil
@@ -150,15 +151,6 @@ def safe_env():
                      'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'}}
 
 
-def coterie_variables(ports):
-    return {'DATABASE_URL': 'postgres://coterie:coterie@db:5432/coterie',
-            'APP_ENV': 'local', 'PILOT_AUTH': 'on', 'KEYCLOAK_DECISIONS': 'on',
-            'PERSONA_SWITCHER': 'off', 'APP_BASE_URL': f"http://localhost:{ports['app:3000']}",
-            'KEYCLOAK_PUBLIC_URL': f"http://localhost:{ports['keycloak:8080']}",
-            'SMTP_HOST': 'mailpit', 'SMTP_PORT': '1025', 'SMTP_SECURE': 'false',
-            'AZURE_AD_CLIENT_ID': '', 'AZURE_AD_CLIENT_SECRET': '', 'AZURE_AD_TENANT_ID': ''}
-
-
 def isolate_compose(model, project, worktree, ports, cpus, memory):
     """Normalize first, then replace all resource identities; never merge port lists."""
     model['name'] = project
@@ -197,6 +189,17 @@ class Environment:
     def __init__(self, state, task, config):
         self.state, self.task, self.config = state, task, config
         self.directory = state.directory(task['id'])
+        if config.get('adapter'):
+            raise ValueError('Built-in project adapters have moved to private environment_adapter files')
+        path = config.get('environment_adapter')
+        self.adapter = {}
+        if path:
+            path = Path(path).expanduser()
+            if not path.is_absolute() or not path.is_file():
+                raise ValueError('environment_adapter must name an existing absolute Python file')
+            self.adapter = runpy.run_path(str(path))
+            if any(name in self.adapter and not callable(self.adapter[name]) for name in ('compose_env', 'check_env', 'ready')):
+                raise ValueError('environment adapter hooks must be callable')
 
     def prepare(self):
         task, config = self.task, self.config
@@ -213,8 +216,8 @@ class Environment:
         model = json.loads(command(args + ['config', '--format', 'json'], cwd=worktree, env=env).stdout)
         ports = {f"{name}:{port['target']}": allocate_port(self.state, task['id'], f"{name}:{port['target']}")
                  for name, spec in model['services'].items() for port in spec.get('ports', [])}
-        if config.get('adapter') == 'coterie':
-            env.update(coterie_variables(ports))
+        if 'compose_env' in self.adapter:
+            env.update(self.adapter['compose_env'](ports))
             model = json.loads(command(args + ['config', '--format', 'json'], cwd=worktree, env=env).stdout)
         model = isolate_compose(model, project, worktree, ports,
                                 config.get('cpus_per_service', 2), config.get('memory_per_service', '2g'))
@@ -235,15 +238,8 @@ class Environment:
         env = safe_env()
         env.update(self.config.get('check_env', {}))
         ports = self.task['environment'].get('ports', {})
-        if self.config.get('adapter') == 'coterie':
-            env.update(coterie_variables(ports))
-            host_db = f"postgres://coterie:coterie@127.0.0.1:{ports['db:5432']}"
-            env.update(DATABASE_URL=host_db + '/coterie', TEST_DATABASE_URL=host_db + '/dotagent_test',
-                       KEYCLOAK_INTERNAL_URL=env['KEYCLOAK_PUBLIC_URL'], TYPESENSE_HOST='127.0.0.1',
-                       TYPESENSE_PORT=str(ports['typesense:8108']),
-                       TYPESENSE_API_KEY='local-dev-typesense-key-not-for-deployment',
-                       SMTP_HOST='127.0.0.1', SMTP_PORT=str(ports['mailpit:1025']),
-                       CLOUD_TASKS_EMULATOR_HOST=f"127.0.0.1:{ports['cloud-tasks-emulator:8123']}")
+        if 'check_env' in self.adapter:
+            env.update(self.adapter['check_env'](ports))
         return env
 
     def inventory(self):
@@ -306,11 +302,8 @@ class Environment:
             jobs = all(by_name.get(n, {}).get('State') == 'exited'
                        and by_name[n].get('ExitCode') == 0 for n in self.config.get('jobs', []))
             if ready and jobs:
-                if self.config.get('adapter') == 'coterie':
-                    base = self.argv('exec', '-T', 'db', 'psql', '-U', 'coterie', '-d', 'coterie')
-                    exists = command(base + ['-tAc', "SELECT 1 FROM pg_database WHERE datname='dotagent_test'"], env=safe_env()).stdout.strip()
-                    if exists != '1':
-                        command(base + ['-c', 'CREATE DATABASE dotagent_test'], env=safe_env())
+                if 'ready' in self.adapter:
+                    self.adapter['ready'](self)
                 env['ready_at'] = time.time()
                 env.pop('stopped_at', None)
                 self.state.save(self.task)

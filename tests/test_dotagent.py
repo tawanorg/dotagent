@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dotagent.state import State
-from dotagent.environment import allocate_port, isolate_compose, revision, git, prepare_worktree
+from dotagent.environment import Environment, allocate_port, isolate_compose, revision, git, prepare_worktree
 from dotagent.hosts import command, execute, host_command, process_record
 from dotagent.integrations import GitHub, Jira, select_ticket
 from dotagent.runtime import recover_child, recover_iteration, valid_report, run_check
@@ -36,7 +36,7 @@ class EngineerTests(unittest.TestCase):
         (self.repo / 'app.txt').write_text('before\n')
         command(['git', '-C', str(self.repo), 'add', '.'])
         command(['git', '-C', str(self.repo), 'commit', '-m', 'fixture'])
-        self.ticket = dict(key='QB-1', summary='Fixture', url='https://example.test/QB-1',
+        self.ticket = dict(key='TASK-1', summary='Fixture', url='https://example.test/TASK-1',
                            priority='High', status='Dev Ready', updated='2026-01-01', blockers=[])
         self.task = self.state.claim(self.ticket, str(self.repo))
 
@@ -53,15 +53,53 @@ class EngineerTests(unittest.TestCase):
                     pass
         second.db.close()
 
+    def test_private_adapter_uses_task_ports_and_owned_readiness_commands(self):
+        adapter = self.root / 'adapter.py'
+        adapter.write_text('''
+def compose_env(ports):
+    return {"APP_BASE_URL": f"http://localhost:{ports['app:3000']}"}
+def check_env(ports):
+    return {"APP_BASE_URL": f"http://127.0.0.1:{ports['app:3000']}"}
+def ready(environment):
+    (environment.directory / 'adapter-ready').write_text(environment.argv('ps')[3])
+''')
+        config = {'environment_adapter': str(adapter), 'compose_files':['compose.json'],
+                  'app_port':'app:3000', 'services':['app']}
+        self.task['worktree'] = str(self.repo)
+        environment = Environment(self.state, self.task, config)
+        model = {'services':{'app':{'ports':[{'target':3000}]}}}
+        seen = []
+        def docker(argv, **kwargs):
+            if argv[0] != 'docker':
+                return command(argv, **kwargs)
+            if 'config' in argv:
+                seen.append(kwargs['env'].copy())
+                return subprocess.CompletedProcess(argv, 0, json.dumps(model), '')
+            return subprocess.CompletedProcess(argv, 0, json.dumps([{'Service':'app','Health':'healthy'}]), '')
+        spawn = subprocess.Popen
+        def launch(argv, **kwargs):
+            return spawn([sys.executable, '-c', 'pass'], **kwargs) if argv[0]=='docker' else spawn(argv, **kwargs)
+        with patch('dotagent.environment.prepare_worktree', return_value=self.repo), \
+             patch('dotagent.environment.command', side_effect=docker), \
+             patch('dotagent.environment.subprocess.Popen', side_effect=launch), \
+             patch.object(environment, 'inventory'):
+            environment.start()
+        port = self.task['environment']['ports']['app:3000']
+        self.assertEqual(seen[-1]['APP_BASE_URL'], f'http://localhost:{port}')
+        self.assertEqual(environment.check_environment()['APP_BASE_URL'], f'http://127.0.0.1:{port}')
+        self.assertEqual((environment.directory/'adapter-ready').read_text(), self.task['environment']['project'])
+        with self.assertRaisesRegex(ValueError, 'absolute Python file'):
+            Environment(self.state, self.task, {'environment_adapter':'relative.py'})
+
     def test_stale_worker_save_cannot_erase_cancellation(self):
         stale = dict(self.task)
         self.task['status'] = 'cancelled'
         self.state.save(self.task)
         self.state.save(stale)
-        self.assertEqual(self.state.task('QB-1')['status'], 'cancelled')
+        self.assertEqual(self.state.task('TASK-1')['status'], 'cancelled')
         stale['status'] = 'active'
         self.state.save(stale, allow_reactivate=True)
-        self.assertEqual(self.state.task('QB-1')['status'], 'active')
+        self.assertEqual(self.state.task('TASK-1')['status'], 'active')
 
     def test_worktree_resume_preserves_original_edits(self):
         (self.repo / 'app.txt').write_text('user work\n')
@@ -71,7 +109,7 @@ class EngineerTests(unittest.TestCase):
         self.assertEqual(path, prepare_worktree(self.state, self.task, {'path': str(self.repo)}))
         self.state.handover(self.task)
         self.assertFalse((path / 'handover.json').exists())
-        self.assertEqual(json.loads((self.state.directory('QB-1') / 'handover.json').read_text())['branch'], 'dotagent/qb-1')
+        self.assertEqual(json.loads((self.state.directory('TASK-1') / 'handover.json').read_text())['branch'], 'dotagent/task-1')
         other = State(self.root / 'other-state')
         duplicate = other.claim(self.ticket, str(self.repo))
         with self.assertRaisesRegex(RuntimeError, 'another runtime'):
@@ -119,7 +157,7 @@ class EngineerTests(unittest.TestCase):
 
     def test_orphan_test_process_is_terminated_on_recovery(self):
         child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)
-        self.state.set('worker', process_record(child, 'QB-1', [], self.root))
+        self.state.set('worker', process_record(child, 'TASK-1', [], self.root))
         recover_child(self.state)
         child.wait(timeout=5)
         self.assertNotEqual(child.returncode, 0)
@@ -139,7 +177,7 @@ from dotagent.hosts import process_record
 s=State(sys.argv[2])
 with s.lock('iteration'):
  p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True)
- s.set('worker',process_record(p,'QB-1',[],sys.argv[2]))
+ s.set('worker',process_record(p,'TASK-1',[],sys.argv[2]))
  s.set('ready',True)
  time.sleep(60)
 ''')
@@ -175,10 +213,10 @@ with s.lock('iteration'):
     def test_existing_actionable_before_priority_and_unknown_priority_blocks(self):
         config = {'eligible_statuses': ['In Progress', 'Dev Ready'], 'active_statuses': ['In Progress'],
                   'priorities': ['Highest', 'High', 'Low']}
-        active = dict(self.ticket, key='QB-2', priority='Low', status='In Progress')
+        active = dict(self.ticket, key='TASK-2', priority='Low', status='In Progress')
         highest = dict(self.ticket, priority='Highest')
-        self.assertEqual(select_ticket([highest, active], config, set())['key'], 'QB-2')
-        self.assertEqual(select_ticket([highest, active], config, {'QB-2'})['key'], 'QB-1')
+        self.assertEqual(select_ticket([highest, active], config, set())['key'], 'TASK-2')
+        self.assertEqual(select_ticket([highest, active], config, {'TASK-2'})['key'], 'TASK-1')
         with self.assertRaisesRegex(RuntimeError, 'priority'):
             select_ticket([dict(self.ticket, priority='Unknown')], config, set())
 
@@ -274,7 +312,7 @@ with s.lock('iteration'):
         prompts = []
         def reply(prompt, schema):
             prompts.append(prompt)
-            return {'comment_id': '42', 'body': 'dotagent:QB-1\nPR ready', 'error': ''}
+            return {'comment_id': '42', 'body': 'dotagent:TASK-1\nPR ready', 'error': ''}
         with patch.object(integration, 'call', side_effect=reply):
             integration.progress(self.task, 'PR ready')
             integration.progress(self.task, 'PR ready')

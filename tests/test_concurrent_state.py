@@ -13,19 +13,19 @@ class ConcurrentStateTests(unittest.TestCase):
     def test_task_workers_are_isolated_but_pause_and_supervisor_lock_are_shared(self):
         with tempfile.TemporaryDirectory() as root:
             project = State(root)
-            first, second, duplicate = State(root, scope='QB-1'), State(root, scope='QB-2'), State(root, scope='QB-1')
+            first, second, duplicate = State(root, scope='TASK-1'), State(root, scope='TASK-2'), State(root, scope='TASK-1')
             for state in (project, first, second, duplicate):
                 self.addCleanup(state.db.close)
             first.set('worker', {'pid': 101})
             second.set('worker', {'pid': 202})
             first.set('heartbeat', 10)
             second.set('heartbeat', 20)
-            first.set('executing_phase', {'ticket': 'QB-1'})
+            first.set('executing_phase', {'ticket': 'TASK-1'})
             self.assertEqual(duplicate.get('worker'), {'pid': 101})
             self.assertEqual(second.get('heartbeat'), 20)
             self.assertIsNone(second.get('executing_phase'))
             self.assertIsNone(project.get('worker'))
-            self.assertEqual(project.scopes(), ['QB-1', 'QB-2'])
+            self.assertEqual(project.scopes(), ['TASK-1', 'TASK-2'])
             project.set('paused', True)
             self.assertTrue(first.get('paused'))
             with first.lock('iteration'), second.lock('iteration'):
@@ -59,7 +59,7 @@ except RuntimeError as error:
 finally:
     s.db.close()
 '''
-            processes = [subprocess.Popen([sys.executable, '-c', script, root, f'QB-{index}'],
+            processes = [subprocess.Popen([sys.executable, '-c', script, root, f'TASK-{index}'],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                          for index in range(12)]
             try:

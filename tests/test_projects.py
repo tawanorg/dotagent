@@ -41,7 +41,7 @@ class ProjectTests(unittest.TestCase):
         for config in (a, b):
             state = State(config['state_dir'])
             self.addCleanup(state.db.close)
-            self.assertIsNotNone(state.claim({'key': 'QB-1', 'summary': 'same ticket key'}, config['repository']))
+            self.assertIsNotNone(state.claim({'key': 'TASK-1', 'summary': 'same ticket key'}, config['repository']))
         self.assertEqual(a['state_dir'], self.select(cwd=first)['state_dir'])
 
     def test_registry_discovery_and_worktree_use_same_project(self):
@@ -53,7 +53,7 @@ class ProjectTests(unittest.TestCase):
         (repo / '.dotagent.toml').unlink()
         subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'initial'], check=True)
         linked = self.root / 'linked'
-        subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-qb', 'linked', str(linked)], check=True)
+        subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-q', '-b', 'linked', str(linked)], check=True)
         named, discovered = self.select(project='customer'), self.select(cwd=linked)
         self.assertEqual(named['_path'], discovered['_path'])
         self.assertEqual(named['_project_id'], discovered['_project_id'])
@@ -100,7 +100,7 @@ class ProjectTests(unittest.TestCase):
         (source / '.dotagent.toml').unlink()
         subprocess.run(['git', '-C', str(source), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'initial'], check=True)
         linked = outer / 'linked'
-        subprocess.run(['git', '-C', str(source), 'worktree', 'add', '-qb', 'linked', str(linked)], check=True)
+        subprocess.run(['git', '-C', str(source), 'worktree', 'add', '-q', '-b', 'linked', str(linked)], check=True)
         with self.assertRaisesRegex(ValueError, 'no project configuration'):
             self.select(cwd=linked)
 

@@ -43,4 +43,7 @@ allowed_users = ["YOUR_GITHUB_LOGIN"]
 poll_seconds = 30
 
 # Jira is optional. Set tasks.provider="jira" and configure [jira] explicitly.
-# See config.coterie.example.toml for that project's complete adapter example.
+# See config.jira.example.toml for optional Jira intake settings.
+
+# Optional trusted project hooks, stored outside this repository.
+# [repository] environment_adapter = "/absolute/path/to/private-adapter.py"
