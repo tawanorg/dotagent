@@ -1,3 +1,4 @@
+import { runTicket } from '../src/scheduler.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
@@ -32,9 +33,7 @@ test('Ralph repairs a failed verification and only finishes after delivery evide
     throw new Error('Unexpected operation ' + op);
   };
   const mastra = createDotagent({ root, bridge, limits: { maxIterations: 20 } });
-  const run = await mastra.getWorkflow('dotagent').createRun({ runId: task.runId });
-  const result = await run.start({ inputData: { ticket: task.ticket } });
-  assert.equal(result.status, 'success');
+  await runTicket(mastra.getWorkflow('dotagent'), task, bridge, 'fixture');
   assert.equal(task.status, 'review');
   assert.deepEqual(actions, ['plan', 'verify', 'implement', 'verify', 'deliver', 'jira']);
   await mastra.observability?.flush();
@@ -60,8 +59,8 @@ test('a blocked task resumes in a replacement Mastra instance without repeating 
       actions.push(input.phase);
       if (input.phase === 'plan') return { action: 'blocked', blockers: ['Need product decision'] };
       if (input.phase === 'implement') return { action: 'verify' };
-      if (input.phase === 'verify') return { passed: true, uiChanged: false };
-      if (input.phase === 'deliver') return { pr: 'https://github.com/example/repo/pull/2', artifacts: false };
+      if (input.phase === 'verify') return { passed: true, uiChanged: false, progress: 'verified' };
+      if (input.phase === 'deliver') return { pr: 'https://github.com/example/repo/pull/2', artifacts: false, progress: 'delivered' };
       if (input.phase === 'jira') return { complete: true };
     }
     throw new Error('Unexpected operation ' + op);
@@ -76,5 +75,24 @@ test('a blocked task resumes in a replacement Mastra instance without repeating 
   assert.equal((await replacement.resume({ resumeData: {} })).status, 'success');
   assert.deepEqual(actions, ['plan', 'implement', 'verify', 'deliver', 'jira']);
   assert.equal(task.status, 'review');
+  await mastra.observability?.flush(); await mastra.shutdown();
+});
+
+test('unchanged implementation and repeated failing verification suspend for no progress', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dotagent-stagnant-'));
+  let task = {ticket:'STUCK-1',runId:'stuck-run',phase:'implement',status:'active',attempts:0,
+    failures:0,stagnant:0,elapsed:0,cost:0,costKnown:true,paused:false,retryAt:0,nextAction:'',blockers:[] as string[],progress:'unchanged'};
+  const bridge: Bridge = async (op, input) => {
+    if (op === 'read') return task;
+    if (op === 'checkpoint') return task = {...task, ...input.patch};
+    if (op === 'perform') return input.phase === 'implement'
+      ? {action:'verify',progress:'unchanged'} : {passed:false,progress:'unchanged'};
+    throw Error('Unexpected operation');
+  };
+  const mastra=createDotagent({root,bridge,limits:{maxStagnant:3,maxIterations:7}});
+  const run=await mastra.getWorkflow('dotagent').createRun({runId:task.runId});
+  assert.equal((await run.start({inputData:{ticket:task.ticket}})).status,'suspended');
+  assert.deepEqual(task.blockers,['Repeated iterations without verified progress']);
+  assert.equal(task.attempts,3);
   await mastra.observability?.flush(); await mastra.shutdown();
 });

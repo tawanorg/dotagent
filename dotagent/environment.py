@@ -141,6 +141,13 @@ def isolate_compose(model, project, worktree, ports, cpus, memory):
     for name, spec in model['services'].items():
         if spec.get('privileged') or spec.get('network_mode') or spec.get('pid') or spec.get('devices'):
             raise RuntimeError(f'unsafe shared host configuration: {name}')
+        if spec.get('volumes_from'):
+            raise RuntimeError('volumes_from requires a dedicated isolation adapter')
+        if spec.get('build'):
+            spec['image'] = f'{project}-{name}:local'
+            if isinstance(spec['build'], dict):
+                spec['build'].pop('tags', None)
+            spec['pull_policy'] = 'build'
         spec.pop('container_name', None)
         spec['cpus'], spec['mem_limit'] = str(cpus), memory
         spec.setdefault('labels', {})['dev.dotagent.owner'] = project

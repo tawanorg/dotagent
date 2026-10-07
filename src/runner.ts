@@ -1,59 +1,74 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { spawn } from 'node:child_process';
+import { openSync, closeSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { configuration, nativeBridge } from './mastra/bridge.js';
 import { createDotagent } from './mastra/workflow.js';
 
-const config = configuration();
-const bridge = nativeBridge();
-const l = config.limits;
-const mastra = createDotagent({ root: config.state_dir, bridge, limits: {
-  maxIterations: l.max_iterations, maxFailures: l.max_failures, maxStagnant: l.max_stagnant,
-  taskSeconds: l.task_seconds, backoffSeconds: l.backoff_seconds, maxSpendUsd: l.max_spend_usd,
-} });
-const workflow = mastra.getWorkflow('dotagent');
-let stopping = false;
-process.on('SIGTERM', () => { stopping = true; });
-process.on('SIGINT', () => { stopping = true; });
+const config=configuration(), bridge=nativeBridge();
+const mastra=createDotagent({root:config.state_dir,bridge});
+const workflow=mastra.getWorkflow('dotagent');
+const workers=new Map<string, Promise<void>>();
+let stopping=false;
+process.on('SIGTERM',()=>{stopping=true;});
+process.on('SIGINT',()=>{stopping=true;});
+async function launch(task: {ticket:string;runId:string;runnerLog:string}) {
+  const path=fileURLToPath(new URL('./task-runner.js',import.meta.url));
+  const log=openSync(task.runnerLog,'a',0o600);
+  const child=spawn(process.execPath,[path,task.ticket,task.runId],{detached:true,stdio:['pipe',log,log]});
+  closeSync(log);
+  let finish!:()=>void;
+  const completed=new Promise<void>(resolve=>{finish=resolve;});
+  workers.set(task.ticket,completed);
+  child.stdin!.on('error',()=>{});
+  child.once('error',()=>finish());
+  child.once('close',async (code)=>{
+    try { await bridge('runner-ended',{ticket:task.ticket,runId:task.runId,pid:child.pid,code}); }
+    catch(error) { console.error(String(error)); }
+    finally { workers.delete(task.ticket);finish(); }
+  });
+  try {
+    await bridge('register-runner',{ticket:task.ticket,runId:task.runId,pid:child.pid,argv:[path,task.ticket,task.runId]});
+    child.stdin!.end('go');
+  } catch(error) {
+    child.stdin!.end();
+    if(child.pid) {try{process.kill(-child.pid,'SIGTERM');}catch{}}
+    throw error;
+  }
+}
 try {
-  while (!stopping) {
-    let wait = 2000;
+  while(!stopping) {
+    let wait=2000;
     try {
-      for (const runId of await bridge('cancelled-runs', {})) {
-        const saved = await workflow.getWorkflowRunById(runId);
-        if (saved && !['success', 'failed', 'canceled'].includes(saved.status))
-          await (await workflow.createRun({ runId })).cancel();
+      const control=await bridge('control',{});
+      for(const runId of await bridge('cancelled-runs',{exclude:[...workers.keys()]})) {
+        const saved=await workflow.getWorkflowRunById(runId);
+        if(saved && !['success','failed','canceled'].includes(saved.status))
+          await (await workflow.createRun({runId})).cancel();
       }
-      const { task, paused } = await bridge('next', {});
-      await bridge('intake-error', { error: null });
-      if (task && task.status === 'active' && task.retryAt <= Date.now() / 1000) {
-        const run = await workflow.createRun({ runId: task.runId, resourceId: config.project_name || 'dotagent' });
-        const snapshot = await workflow.getWorkflowRunById(task.runId);
-        let result;
-        if (!snapshot) result = await run.start({ inputData: { ticket: task.ticket } });
-        else if (snapshot.status === 'suspended') result = await run.resume({ resumeData: {} });
-        else if (['running', 'waiting', 'pending', 'paused'].includes(snapshot.status))
-          result = await run.restart();
-        else {
-          await bridge('workflow-terminal', { ticket: task.ticket, runId: task.runId, reason: snapshot.status });
-        }
-        if (result?.status === 'failed')
-          await bridge('workflow-terminal', { ticket: task.ticket, runId: task.runId, reason: 'failed; see local trace' });
-        await mastra.observability?.flush();
-      } else if (!paused && !task) wait = config.jira.poll_seconds * 1000;
-    } catch (error) {
-      await bridge('intake-error', { error: String(error) });
-      wait = Math.min(30000, l.backoff_seconds * 1000);
+      if(!control.paused && workers.size < control.workers) {
+        const {task}=await bridge('next',{exclude:[...workers.keys()]});
+        await bridge('intake-error',{error:null});
+        if(task && task.status==='active' && task.retryAt<=Date.now()/1000) {
+          await launch(task);
+          wait=0; // Fill all configured slots without an arbitrary hard cap.
+        } else if(!task && workers.size===0) wait=config.jira.poll_seconds*1000;
+      }
+    } catch(error) {
+      await bridge('intake-error',{error:String(error)});
+      wait=Math.min(30000,config.limits.backoff_seconds*1000);
     }
-    if (process.env.DOTAGENT_ONCE === '1') break;
-    const control = await bridge('control', {});
-    for (let elapsed = 0; elapsed < wait && !stopping; elapsed += 1000) {
+    if(process.env.DOTAGENT_ONCE==='1') {await Promise.all(workers.values());break;}
+    const control=await bridge('control',{});
+    for(let elapsed=0;elapsed<wait && !stopping;elapsed+=1000) {
       await delay(1000);
-      if (elapsed % 2000 === 0) {
-        const current = await bridge('control', {});
-        if (current.revision !== control.revision || current.paused !== control.paused) break;
+      if(elapsed%2000===0) {
+        const current=await bridge('control',{});
+        if(current.revision!==control.revision || current.paused!==control.paused) break;
       }
     }
   }
 } finally {
-  await mastra.observability?.flush();
-  await mastra.shutdown();
+  // The external supervisor reaps registered task groups and native child groups.
+  await mastra.observability?.flush();await mastra.shutdown();
 }

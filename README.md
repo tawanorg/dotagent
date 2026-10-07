@@ -49,14 +49,25 @@ dotagent --project coterie status
 dotagent --project coterie studio
 ```
 
-`studio` prints the URL. Open Workflows → dotagent to inspect phases, saved runs
+`start` automatically opens the project dashboard once its API is ready, including
+when a service is already running. Use `start --no-browser` for terminal-only use;
+login/service starts never open a browser. `studio` prints the URL. Open Workflows → dotagent to inspect phases, saved runs
 and traces. Studio binds to **127.0.0.1**. It is an inspection interface; use CLI
 controls for execution. Its API cannot launch native workers outside supervision.
 
 Worktrees of one repository share identity and brain. Different repositories get
 separate state, workflows, memories, claims and Studio ports. Port collisions
-fail visibly; select another `studio.port`. One active task runs per project.
-Starting another project is explicit; each enforces its configured resource limits.
+fail visibly; select another `studio.port`. The worker count is configurable with no fixed software ceiling:
+
+```sh
+dotagent start --host codex --workers 6
+```
+
+The default is `concurrency = 1`; `--workers N` persists the count per project.
+Raising it fills more slots; lowering it lets current workers finish. Each active
+worktree gets a separate process, run, log and resource ownership. All runs share
+the project dashboard and brain, with ticket/branch/host/worktree labels.
+CPU/memory/time/spending settings still apply. Project memories remain separate.
 
 ## Controls and login startup
 
@@ -149,7 +160,7 @@ npm run typecheck
 npm test
 python3 -m unittest discover -s tests -v
 npm run build
-python3 tests/dotagent_live.py /absolute/path/to/node_modules/@playwright/test
+python3 tests/dotagent_live.py /absolute/path/to/node_modules/@playwright/test --mastra
 ```
 
 - **No configuration:** add `.dotagent.toml` or select `--project NAME`; an unrelated directory never defaults to Coterie's backlog.

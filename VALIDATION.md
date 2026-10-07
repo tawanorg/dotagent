@@ -1,4 +1,32 @@
-# Validation — 7 October 2026
+# Mastra / project brain validation — 7 October 2026
+
+- `npm run typecheck`, `npm test` (3 tests), `python3 -m unittest discover -s tests -p 'test_*.py'` (32 tests), and `npm run build` passed (Mastra core 1.74.0).
+- Real workflow tests cover fresh scheduler dispatch, failed verification/repair, replacement-instance resume, and repeated no-progress suspension.
+- Python subprocess tests cover replayed receipts, stale workflow checkpoints and durable timeout accounting.
+- Project tests cover registry/current-directory/worktree identity, separate task histories and brain ownership, reopen, correction history and rollback.
+- Actual supervisor test killed scheduler PID 4779; replacement PID 5601 started and pause remained true.
+- Studio workflow graph and saved synthetic run inspected in Chromium; no console errors or failed requests observed. Screenshot originals remain outside Git.
+- Interactive dashboard-open test passes; the OS browser opened the registered Coterie dashboard at http://127.0.0.1:46473/workflows. No backlog execution was unpaused.
+- Real parent scheduler launched two task workers concurrently; both verified their live Docker apps and suspended at the configured fixture iteration limit. Read-only GitHub lookup used a fixture; no Jira/model calls were made.
+- Twelve concurrent subprocesses could not over-reserve the shared USD budget; settlement retries did not double-refund it.
+- Recovery regression checks cover stopping the orphan scheduler before workers and detecting stalled Mastra calls outside engineering phases.
+- Docker/Playwright fixture passed again: isolated ports/data, preservation of the other project, rejected +2 behavior and verified +1 repair.
+- Matt Pocock Standards and Spec reviews found fresh-run initialization, timeout-budget and false-progress bugs. Regression checks reproduced them and the fixes passed. Process-result parsing now waits for stdout close; workflow API failures have bounded retries.
+
+Current receipts: ~/.local/state/dotagent-mastra-validation/ and
+~/.local/state/dotagent-validation/1791342389491629000/. This is a synthetic lifecycle
+and application fixture, not a completed business Jira ticket. QB-628's approved
+production-copy verification remains unavailable. Physical laptop sleep/reboot was
+not forced. Native host/GitHub/Jira checks below were performed before the migration;
+no new real Jira ticket was automatically executed during this upgrade.
+
+Dependency audit reports upstream advisories, including braces <=3.0.3 in Mastra's
+build tooling (GHSA-vfj7-8cjw-p6xm); no patched compatible release is reported by npm.
+No force downgrade was applied. Studio is loopback-only and cannot execute native workers.
+LibSQL records traces; aggregate metrics storage is not configured.
+
+## Earlier adapter validation (before Mastra migration)
+
 
 Observed results on this Mac; fixture checks are not production-ticket completion.
 
@@ -24,7 +52,7 @@ Observed results on this Mac; fixture checks are not production-ticket completio
 | Full real Jira task | **Incomplete:** QB-628 requires production-copy migration verification; no approved sanitized snapshot was available |
 | Physical sleep/reboot | Not forced; process restart and persisted pause were tested |
 
-Run the deterministic suite from dotfiles:
+Run the deterministic suite from the standalone dotagent checkout:
 
 ```sh
 python3 -m unittest discover -s tests -v

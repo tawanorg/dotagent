@@ -12,6 +12,7 @@ export type Bridge = (operation: string, input: Record<string, any>) => Promise<
 const request = z.object({ ticket: z.string().min(1) });
 const checkpoint = z.object({
   ticket: z.string(), runId: z.string(), phase: z.string(), status: z.string(),
+  worktree: z.string().default(''), branch: z.string().default(''), host: z.string().default(''),
   attempts: z.number(), failures: z.number(), stagnant: z.number(),
   elapsed: z.number(), cost: z.number(), costKnown: z.boolean(),
   paused: z.boolean(), retryAt: z.number(), nextAction: z.string(),
@@ -60,9 +61,10 @@ export function createDotagent(options: { root: string; bridge: Bridge; limits?:
         if (abortSignal?.aborted) throw error;
         outcome = { error: String(error) };
       }
-      outcome.seconds = (Date.now() - started) / 1000;
+      outcome.seconds = (outcome.seconds || 0) + (Date.now() - started) / 1000;
       tracingContext?.currentSpan?.update({ metadata: {
         ticket: task.ticket, phase, attempt: task.attempts + 1,
+        worktree: task.worktree, branch: task.branch, host: task.host,
         result: outcome.error ? 'failed' : outcome.passed === false ? 'verification-failed' : 'checkpoint',
       } });
       if (outcome.usage) tracingContext?.currentSpan?.createEventSpan({
@@ -114,9 +116,10 @@ export function createDotagent(options: { root: string; bridge: Bridge; limits?:
         if (!outcome.complete) throw new Error('Delivery evidence incomplete');
         patch.phase = 'review'; patch.status = 'review'; patch.nextAction = 'Await human PR review';
       } else throw new Error('Unknown task phase ' + task.phase);
-      // Phase advancement is meaningful progress; repeated prose alone is not.
-      patch.stagnant = patch.phase && patch.phase !== task.phase || outcome.progress && outcome.progress !== task.progress
+      // Only code/evidence/delivery changes count; alternating phases alone do not.
+      patch.stagnant = outcome.progress && outcome.progress !== task.progress
         ? 0 : task.stagnant + 1;
+      if (outcome.interrupted) patch.stagnant = task.stagnant;
       if (patch.stagnant >= limits.maxStagnant && patch.status !== 'review') {
         patch.status = 'blocked'; patch.blockers = ['Repeated iterations without verified progress'];
       }

@@ -1,5 +1,6 @@
 """Durable claims and evidence. All operational files stay outside source trees."""
 import contextlib
+from decimal import Decimal
 import fcntl
 import hashlib
 import json
@@ -8,6 +9,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+import uuid
 
 
 def redact(value):
@@ -34,7 +36,13 @@ def atomic(path, value):
 
 
 class State:
-    def __init__(self, root):
+    SCOPED_KEYS = {'worker', 'heartbeat', 'executing_phase', 'iteration_worker', 'bridge_worker'}
+
+    def __init__(self, root, scope=None):
+        if scope is not None and (not isinstance(scope, str) or not scope or len(scope) > 256):
+            raise ValueError('scope must be a nonempty task identifier of at most 256 characters')
+        self.scope = scope
+        self._scope_hash = hashlib.sha256(scope.encode()).hexdigest() if scope is not None else None
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(self.root / 'state.sqlite', timeout=30)
@@ -49,13 +57,27 @@ class State:
             seq INTEGER PRIMARY KEY, task TEXT, at REAL NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS ports (
             port INTEGER PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, UNIQUE(owner,name));
+          CREATE TABLE IF NOT EXISTS spend_reservations (
+            id TEXT PRIMARY KEY, amount TEXT NOT NULL, settled TEXT);
         ''')
         self.db.commit()
         os.chmod(self.root / 'state.sqlite', 0o600)
+        if scope is not None:
+            with self.db:
+                self.db.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',
+                                (f'scope:{self._scope_hash}:identity', json.dumps(scope)))
+
+    def scopes(self):
+        return sorted(json.loads(row[0]) for row in self.db.execute(
+            "SELECT value FROM settings WHERE key GLOB 'scope:*:identity'"))
+
+    def _key(self, key):
+        return f'scope:{self._scope_hash}:{key}' if self.scope is not None and key in self.SCOPED_KEYS else key
 
     @contextlib.contextmanager
     def lock(self, name='supervisor'):
-        with open(self.root / (name + '.lock'), 'a') as f:
+        filename = name + ('-' + self._scope_hash if name == 'iteration' and self.scope is not None else '')
+        with open(self.root / (filename + '.lock'), 'a') as f:
             try:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -63,12 +85,57 @@ class State:
             yield
 
     def get(self, key, default=None):
-        row = self.db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        row = self.db.execute('SELECT value FROM settings WHERE key=?', (self._key(key),)).fetchone()
         return json.loads(row[0]) if row else default
 
     def set(self, key, value):
         with self.db:
-            self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(value)))
+            self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (self._key(key), json.dumps(value)))
+
+    @staticmethod
+    def _usd(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            raise ValueError('USD amount must be a finite nonnegative number')
+        amount = Decimal(str(value))
+        if not amount.is_finite() or amount < 0:
+            raise ValueError('USD amount must be a finite nonnegative number')
+        return amount
+
+    def reserve_spend(self, cap_usd, requested_usd):
+        """Atomically charge a reservation; unknown/crashed sessions retain that charge."""
+        cap, requested = self._usd(cap_usd), self._usd(requested_usd)
+        if requested <= 0:
+            raise ValueError('requested USD reservation must be positive')
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            spent = self._usd(self.get('spend_usd', 0))
+            amount = min(requested, cap - spent)
+            if amount <= 0:
+                raise RuntimeError('persistent spending budget exhausted')
+            receipt = str(uuid.uuid4())
+            self.db.execute('INSERT INTO spend_reservations VALUES (?,?,NULL)', (receipt, str(amount)))
+            self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('spend_usd', str(spent + amount)))
+        return receipt, float(amount)
+
+    def settle_spend(self, receipt, actual_usd):
+        """Replace a reservation with reported cost exactly once, across all workers."""
+        actual = self._usd(actual_usd)
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT amount, settled FROM spend_reservations WHERE id=?', (receipt,)).fetchone()
+            if row is None:
+                raise ValueError('unknown spending reservation')
+            spent = self._usd(self.get('spend_usd', 0))
+            if row['settled'] is not None:
+                if Decimal(row['settled']) != actual:
+                    raise ValueError('spending reservation already settled with a different cost')
+                return float(spent)
+            total = spent - Decimal(row['amount']) + actual
+            if total < 0:
+                raise ValueError('spending total is inconsistent with its reservation')
+            self.db.execute('UPDATE spend_reservations SET settled=? WHERE id=?', (str(actual), receipt))
+            self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('spend_usd', str(total)))
+        return float(total)
 
     def event(self, task, kind, data):
         with self.db:

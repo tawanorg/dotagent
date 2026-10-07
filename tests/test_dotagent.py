@@ -81,12 +81,17 @@ class EngineerTests(unittest.TestCase):
         self.assertNotEqual(a, b)
         self.assertEqual(a, allocate_port(self.state, 'a', 'app', start=26000, end=27000))
         model = {'services': {'app': {'ports': [{'target': 80, 'published': '80'}],
-                                     'volumes': [{'type': 'volume', 'source': 'data', 'target': '/data'}]}},
+                                     'volumes': [{'type': 'volume', 'source': 'data', 'target': '/data'}],
+                                     'build': {'context': '.', 'tags': ['shared:latest']}, 'image': 'shared:latest'}},
                  'volumes': {'data': {}}, 'networks': {'default': {}}}
         one = isolate_compose(copy.deepcopy(model), 'one', self.repo, {'app:80': a}, 1, '256m')
         two = isolate_compose(copy.deepcopy(model), 'two', self.repo, {'app:80': b}, 1, '256m')
         self.assertNotEqual(one['volumes']['data']['name'], two['volumes']['data']['name'])
         self.assertEqual(one['services']['app']['ports'][0]['host_ip'], '127.0.0.1')
+        self.assertNotEqual(one['services']['app']['image'], two['services']['app']['image'])
+        self.assertNotIn('tags', one['services']['app']['build'])
+        with self.assertRaisesRegex(RuntimeError, 'volumes_from'):
+            isolate_compose({'services': {'app': {'volumes_from': ['other']}}}, 'bad', self.repo, {}, 1, '256m')
         model['volumes']['data']['external'] = True
         with self.assertRaisesRegex(RuntimeError, 'external'):
             isolate_compose(model, 'bad', self.repo, {'app:80': a}, 1, '256m')

@@ -46,3 +46,25 @@ class BridgeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class SupervisorRecoveryTests(unittest.TestCase):
+    def test_long_interrupted_phases_exhaust_persisted_budget_and_keep_elapsed_evidence(self):
+        import time
+        from dotagent.supervisor import record_failure
+        with tempfile.TemporaryDirectory() as root:
+            state = State(root)
+            task = state.claim({'key': 'STALLED-1', 'summary': 'Timeout'}, root)
+            task['workflow_run'] = 'run-1'
+            state.save(task)
+            phase = {'ticket': task['id'], 'phase': 'plan', 'attempt': 1, 'started': time.time() - 3601}
+            config = {'limits': {'max_failures': 3}}
+            for _ in range(3):
+                record_failure(state, config, 'phase timed out', phase)
+                state.db.close()
+                state = State(root)
+            self.assertTrue(state.get('paused'))
+            self.assertEqual(state.get('process_failures'), 3)
+            pending = state.task(task['id'])['pending_result']
+            self.assertGreaterEqual(pending['seconds'], 3601)
+            self.assertEqual(pending['error'], 'phase timed out')
+            state.db.close()

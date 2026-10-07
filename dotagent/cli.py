@@ -6,12 +6,11 @@ from pathlib import Path
 import plistlib
 import shutil
 import sys
-import tomllib
 
 from .environment import Environment
 from .hosts import command
 from .integrations import remote_matches
-from .supervisor import supervise
+from .supervisor import supervise, open_studio
 from .projects import resolve_config
 from .memory import ProjectMemory
 from .state import State, atomic
@@ -30,8 +29,8 @@ def load_config(path=None, project=None):
     config['jira'].setdefault('cwd', config['repository']['path'])
     if config['limits'].get('max_spend_usd') is not None:
         config['host']['max_spend_usd'] = config['limits']['max_spend_usd']
-    if config.get('concurrency', 1) != 1:
-        raise ValueError('this release supports one active task; resource ownership is per task')
+    if type(config.get('concurrency', 1)) is not int or config.get('concurrency', 1) < 1:
+        raise ValueError('concurrency must be a positive worker count')
     for name in ('path', 'github', 'pr_base', 'compose_files', 'app_port', 'services', 'checks'):
         if not config['repository'].get(name):
             raise ValueError(f'missing repository.{name}')
@@ -121,6 +120,8 @@ def main():
         sub.add_argument('--host', choices=['codex', 'claude'], default='codex')
         if name == 'start':
             sub.add_argument('--once', action='store_true', help='One intake/iteration, useful for diagnostics')
+            sub.add_argument('--workers', type=int, help='Concurrent task workers; any positive count')
+            sub.add_argument('--no-browser', action='store_true', help='Do not open the project dashboard')
             sub.add_argument('--service', action='store_true', help=argparse.SUPPRESS)
     commands.add_parser('status').add_argument('--json', action='store_true')
     commands.add_parser('pause')
@@ -166,6 +167,7 @@ def main():
             rows = [{'ticket': t['id'], 'status': t['status'], 'phase': t['phase'],
                      'last_verified': next((e for e in reversed(t['evidence']) if e['exit_code'] == 0), None),
                      'blockers': t['blockers'], 'next_action': t['next_action'],
+                     'worktree': t.get('worktree'), 'branch': t.get('branch'), 'host': t.get('host'),
                      'pr': t['delivery'].get('pr')} for t in state.tasks()]
             if args.json:
                 print(json.dumps({'paused': state.get('paused', False), 'tasks': rows,
@@ -175,6 +177,8 @@ def main():
                 print('Studio: ' + state.get('studio_url', 'not started'))
                 for row in rows:
                     print(f"{row['ticket']} | {row['status']}/{row['phase']} | {row['next_action']}")
+                    if row['worktree']:
+                        print(f"  {row['host']} | {row['branch']} | {row['worktree']}")
                     for blocker in row['blockers']:
                         print('  Blocked: ' + blocker)
                 if state.get('intake_error'):
@@ -223,6 +227,10 @@ def main():
         elif args.action == 'start':
             if not doctor(config, args.host):
                 raise RuntimeError('doctor failed; fix prerequisites before startup')
+            if args.workers is not None:
+                if args.workers < 1:
+                    raise RuntimeError('--workers must be positive')
+                state.set('preferred_workers', args.workers)
             if not args.service:
                 state.set('preferred_host', args.host)
                 state.set('paused', False)
@@ -234,8 +242,11 @@ def main():
             except RuntimeError:
                 print('Supervisor already running; startup preference applied.' if not args.service
                       else 'Supervisor already running.')
+                if not args.service and not args.no_browser:
+                    if open_studio(state, config) is None:
+                        print('Studio is not ready; inspect status and local mastra.log.')
                 return
-            supervise(state, config, args.host, args.once)
+            supervise(state, config, args.host, args.once, browser=not args.service and not args.no_browser)
     except KeyboardInterrupt:
         print('Stopped. Checkpoint remains available.', file=sys.stderr)
     except Exception as error:

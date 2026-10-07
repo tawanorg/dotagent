@@ -75,17 +75,13 @@ def execute(host, prompt, cwd, directory, schema, config, state, task=None, brid
     result_path.unlink(missing_ok=True)
     atomic(directory / 'prompt.md', prompt)
     config = dict(config)
-    reservation = 0
+    reservation = None
     if config.get('max_spend_usd') is not None:
         if host != 'claude':
             raise RuntimeError('hard USD budget unavailable for this host; configure time/token limits')
-        spent = state.get('spend_usd', 0)
-        reservation = min(config.get('iteration_budget_usd', 5), config['max_spend_usd'] - spent)
-        if reservation <= 0:
-            raise RuntimeError('persistent spending budget exhausted')
         # Reserve before spawn. A crash/unknown cost retains this conservative charge.
-        state.set('spend_usd', spent + reservation)
-        config['iteration_budget_usd'] = reservation
+        reservation, amount = state.reserve_spend(config['max_spend_usd'], config.get('iteration_budget_usd', 5))
+        config['iteration_budget_usd'] = amount
     argv = host_command(host, cwd, directory, schema, config, bridge)
     started = time.monotonic()
     last_size, last_activity = 0, started
@@ -125,7 +121,10 @@ def execute(host, prompt, cwd, directory, schema, config, state, task=None, brid
                         event = json.loads(line)
                         actual = event.get('total_cost_usd')
                         if event.get('type') == 'result' and isinstance(actual, (int, float)):
-                            state.set('spend_usd', state.get('spend_usd') - reservation + actual)
+                            try:
+                                state.settle_spend(reservation, actual)
+                            except ValueError:
+                                pass  # Invalid provider cost retains the conservative reservation.
                             break
                     except json.JSONDecodeError:
                         pass

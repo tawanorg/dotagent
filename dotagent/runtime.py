@@ -5,12 +5,11 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import sys
 import time
 
 from .environment import Environment, git, prepare_worktree, revision
 from .hosts import Interrupted, command, execute, stop_group, process_record
-from .integrations import GitHub, Jira, STRING, STRINGS, obj, select_ticket
+from .integrations import GitHub, Jira, STRING, STRINGS, obj
 from .state import atomic
 
 

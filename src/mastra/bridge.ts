@@ -21,7 +21,7 @@ export function nativeBridge(executable = process.env.DOTAGENT_PYTHON || 'python
         if (output.length > 4 * 1024 * 1024) { child.kill(); reject(new Error('Bridge output limit exceeded')); }
       });
       child.once('error', reject);
-      child.once('exit', code => {
+      child.once('close', code => {
         try {
           const result = JSON.parse(output);
           if (code || result.bridgeError) reject(new Error(result.bridgeError || 'Bridge process failed'));

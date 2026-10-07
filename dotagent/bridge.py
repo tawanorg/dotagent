@@ -16,31 +16,39 @@ from .hosts import Interrupted
 
 
 def view(state, task):
-    evidence = [(e['criterion'], e['revision']) for e in task['evidence'] if e['exit_code'] == 0]
+    evidence = sorted({(e['criterion'], e['revision']) for e in task['evidence'] if e['exit_code'] == 0})
     content = revision(task['worktree']) if task.get('worktree') and Path(task['worktree']).exists() else ''
     progress = hashlib.sha256(json.dumps([content, evidence, task.get('verified_revision'),
                                          task['delivery']], sort_keys=True).encode()).hexdigest()
     return dict(ticket=task['id'], runId=task['workflow_run'], phase=task['phase'],
+                worktree=task.get('worktree', ''), branch=task.get('branch', ''), host=task.get('host', ''),
                 status=task['status'], attempts=task['attempts'], failures=task['failures'],
                 stagnant=task['stagnant'], elapsed=task['elapsed'], cost=task['cost'],
                 costKnown=task['cost_known'], paused=bool(state.get('paused')),
                 retryAt=task.get('retry_at', 0), nextAction=task['next_action'],
-                blockers=task['blockers'], progress=progress)
+                blockers=task['blockers'], progress=progress, runnerLog=str(state.directory(task['id']) / 'worker.log'))
 
 
 def dispatch(state, config, operation, data):
-    state.set('scheduler_heartbeat', time.time())
+    if state.scope is None:
+        state.set('scheduler_heartbeat', time.time())
+    else:
+        state.set('heartbeat', time.time())
     if operation == 'control':
-        return {'revision': state.get('control_revision', 0), 'paused': bool(state.get('paused'))}
+        return {'revision': state.get('control_revision', 0), 'paused': bool(state.get('paused')),
+                'workers': state.get('preferred_workers', config.get('concurrency', 1))}
     if operation == 'next':
         if state.get('paused'):
             return {'paused': True, 'task': None}
         if not config['repository'].get('keep_inactive_environments', False):
             for task in state.tasks():
                 env = task.get('environment', {})
-                if task['status'] in ('blocked', 'cancelled', 'review') and env and not env.get('stopped_at'):
+                if (task['status'] in ('blocked', 'cancelled', 'review') and env and not env.get('stopped_at')
+                        and task['id'] not in data.get('exclude', [])):
                     Environment(state, task, config['repository']).stop()
-        active = [t for t in state.tasks() if t['status'] == 'active']
+        excluded = set(data.get('exclude', []))
+        active = [t for t in state.tasks() if t['status'] == 'active' and t['id'] not in excluded
+                  and t.get('retry_at', 0) <= time.time()]
         task = active[0] if active else None
         if not task:
             tickets = Jira(state, config['jira'], config['host']).intake()
@@ -61,13 +69,41 @@ def dispatch(state, config, operation, data):
         state.set('intake_error', data.get('error'))
         return {}
     if operation == 'cancelled-runs':
-        return [t['workflow_run'] for t in state.tasks() if t['status'] == 'cancelled' and t.get('workflow_run')]
+        return [t['workflow_run'] for t in state.tasks() if t['status'] == 'cancelled' and t.get('workflow_run') and t['id'] not in data.get('exclude', [])]
     if operation == 'recover':
         recover_child(state)
         return {}
     task = state.task(data['ticket'])
     if not task or task.get('workflow_run') != data.get('runId'):
         raise RuntimeError('Task does not belong to this workflow run')
+    if operation == 'register-runner':
+        from .hosts import process_record
+        from types import SimpleNamespace
+        if state.get('iteration_worker'):
+            raise RuntimeError('Task runner already registered')
+        state.set('iteration_worker', process_record(SimpleNamespace(pid=data['pid']), task['id'], data['argv'], state.directory(task['id'])))
+        return {}
+    if operation == 'runner-ended':
+        from .supervisor import recover_task
+        phase = state.get('executing_phase')
+        current = state.get('iteration_worker')
+        if current and current['pid'] == data['pid']:
+            recover_task(state, config, 'Task runner exited unexpectedly')
+        if data.get('code') != 0 and not phase and not state.task(task['id']).get('pending_result'):
+            return dispatch(state, config, 'workflow-api-error', {**data, 'reason': 'Task runner exited before checkpoint'})
+        return {}
+    if operation == 'workflow-api-error':
+        task['workflow_api_failures'] = task.get('workflow_api_failures', 0) + 1
+        task['retry_at'] = time.time() + min(300, 2 ** task['workflow_api_failures'] * config['limits']['backoff_seconds'])
+        if task['workflow_api_failures'] >= config['limits']['max_failures']:
+            task['status'], task['workflow_failed'] = 'blocked', True
+            task['blockers'] = ['Repeated Mastra API failure; inspect logs: ' + data['reason']]
+        state.save(task)
+        return view(state, task)
+    if operation == 'workflow-api-ok':
+        task['workflow_api_failures'] = 0
+        state.save(task)
+        return {}
     if operation == 'workflow-terminal':
         task['status'] = 'blocked'
         task['workflow_failed'] = True
@@ -86,7 +122,10 @@ def dispatch(state, config, operation, data):
             if pending:
                 # Replay a completed action instead of repeating its external mutations.
                 return pending
-            state.set('executing_phase', {'ticket': task['id'], 'phase': task['phase'], 'started': time.time()})
+            from .hosts import process_record
+            from types import SimpleNamespace
+            state.set('bridge_worker', process_record(SimpleNamespace(pid=os.getpid()), task['id'], [], state.directory(task['id'])))
+            state.set('executing_phase', {'ticket': task['id'], 'phase': task['phase'], 'attempt': task['attempts'] + 1, 'started': time.time()})
             try:
                 outcome = perform(state, task, config)
             except Interrupted:
@@ -96,6 +135,7 @@ def dispatch(state, config, operation, data):
                 outcome = {'error': str(error)}
             finally:
                 state.set('executing_phase', None)
+                state.set('bridge_worker', None)
             outcome.update(receipt=str(uuid.uuid4()), progress=view(state, task)['progress'])
             task['pending_result'] = outcome
             state.save(task)
@@ -129,6 +169,8 @@ def dispatch(state, config, operation, data):
             finally:
                 memory.close()
         state.save(task)
+        if patch.get('stagnant') == 0 and patch.get('failures') == 0:
+            state.set('process_failures', 0)
         state.handover(task)
         return view(state, task)
     raise RuntimeError('Unknown bridge operation')
@@ -137,8 +179,8 @@ def dispatch(state, config, operation, data):
 def main():
     os.umask(0o077)
     config = json.loads(Path(os.environ['DOTAGENT_RUNTIME_CONFIG']).read_text())
-    state = State(config['state_dir'])
     data = json.load(sys.stdin)
+    state = State(config['state_dir'], scope=data.get('input', {}).get('ticket'))
     try:
         with contextlib.redirect_stdout(sys.stderr):
             result = dispatch(state, config, data['operation'], data.get('input', {}))

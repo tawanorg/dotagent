@@ -63,3 +63,16 @@ Hermes official repository documentation describes persistent sessions/memory/sk
 - https://github.blog/changelog/2026-09-01-github-cli-media-in-issues-pull-requests-and-comments/ — feature release.
 
 Research made no repository changes, sent no external messages, and performed no delivery mutations. Successful end-to-end auth/model calls, Jira intake, attachment upload and browser render are implementation validation work still required.
+
+## Hermes memory and concurrency follow-up
+
+Verified official v2026.9.24: Hermes tools MCP explicitly excludes memory and
+session_search because they require a running AIAgent. Its profile documentation
+warns against sharing one Hermes home between concurrent agents. Built-in memory
+is bounded; provider plugins plug storage into Hermes, not Hermes into Mastra.
+Dotagent therefore owns shared project memory and retains native worker authentication.
+No standalone Hermes memory API is claimed or invented.
+
+- https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/agent/transports/hermes_tools_mcp_server.py#L53
+- https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/website/docs/user-guide/profiles.md
+- https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/website/docs/user-guide/features/memory.md
