@@ -305,3 +305,84 @@ to repeat after restart. Missing adapter files and old named adapters fail
 explicitly; they do not silently fall back to another project's configuration.
 For Jira, merge the optional [intake settings](../dotagent/config.jira.example.toml)
 into your own project configuration.
+
+## Terminal dashboard
+
+Run `dotagent` in an interactive terminal, or `dotagent dashboard`.
+`dotagent --project NAME dashboard` selects that project first. It discovers
+registered project TOMLs and the current repository configuration. Opening or
+closing the dashboard does not start intake, pause workers or change task state.
+Noninteractive `dotagent` prints help; use `status --json` in scripts.
+
+| Key | Action |
+| --- | --- |
+| Left / right | Select project |
+| Up / down | Select task |
+| h | Select Codex / Claude for the next start |
+| s / R | Start / restart selected project, one worker (confirm first) |
+| p / r | Pause project / resume selected task |
+| o / w / v | Open Studio / visible worker terminal / PR |
+| a | Queue a local task request |
+| d | Authorize a draft with limitations; enter an explicit reason |
+| x | Reconcile an externally created matching draft |
+| q | Close dashboard |
+
+The dashboard shows phase, next action, blockers and recent readable worker events,
+with one-second refresh and bounded log reads. The visible worker terminal still
+supports native takeover. Start preserves the configured intake scope: inspect
+the shown provider/JQL and configure the allowed ticket before starting. Changing
+host affects newly claimed tasks; existing task host ownership is preserved.
+
+This is a terminal UI, **not a panel embedded beside Codex chat**. The currently
+documented MCP App conversation panels target ChatGPT; this Codex client's in-app
+browser discovery returned no available browser. Native Codex embedding remains
+unverified/unavailable here, and no unsupported extension or extra web server is
+installed.
+
+## Configuration changes and scoped restart
+
+Start/resume compares the running resolved configuration before unpausing. Drift
+pauses the project and requests `dotagent --project NAME restart --detach`.
+Restart sends SIGTERM only to a supervisor whose recorded process identity still
+matches, allowing it to stop its own workers and Studio. Recovery waits for the
+Studio socket to release; an unrelated listener is never killed.
+
+Legacy supervisors without recorded identity require explicitly stopping their
+own service first. On macOS use its exact `dev.dotagent.<repository-id>` launchd
+label, then update the installation/build and reinstall that project service.
+Do not use global process kills. Running projects are not restarted by opening
+the dashboard or rebuilding dotagent.
+
+## Drafts with disclosed limitations
+
+Ordinary automated delivery still requires successful current verification.
+If checks fail or cannot run, pause the project (or wait until the task blocks),
+review the current implementation and explicitly request:
+
+```sh
+dotagent --project NAME draft TASK_ID --reason "Authorize a draft for review with the recorded failures and unavailable checks"
+```
+
+Authorization is persisted for that task/content fingerprint. It requires frozen
+criteria, recorded implementation files, current correctness review and available
+logs for current evidence. Stale reviews require a new engineering checkpoint.
+The PR is labeled **DRAFT WITH LIMITATIONS**, includes failed checks and missing
+checks as unverified, and stays in human review. No verification status is promoted,
+no tracker update is sent, and no merge/deploy/completion action runs. Unreviewed
+or stale screenshots stay local and are not uploaded; PR image rendering remains
+unverified until inspected.
+
+For a draft created outside dotagent:
+
+```sh
+dotagent --project NAME reconcile TASK_ID
+```
+
+This only adopts an open draft on the task branch whose remote head matches the
+clean local worktree. Repeating it is safe. It preserves failed evidence and
+blockers, makes no GitHub/tracker mutations, and does not claim verified delivery.
+
+Git LFS pointers are detected before setup/build and recorded as limitations.
+Independent implementation/checks can continue, but unresolved assets prevent
+an all-green verification result. Install git-lfs and run `git lfs pull` in the
+owned task worktree to restore assets; rerun checks afterward.

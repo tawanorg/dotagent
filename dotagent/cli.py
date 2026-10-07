@@ -12,7 +12,7 @@ import sys
 from .environment import Environment
 from .hosts import command
 from .integrations import remote_matches
-from .supervisor import supervise, open_studio
+from .supervisor import supervise, open_studio, require_current_config, stop_supervisor
 from .projects import resolve_config
 from .memory import ProjectMemory
 from .state import State, atomic
@@ -126,10 +126,10 @@ def main():
     parser.add_argument('--config', default=os.environ.get('DOTAGENT_CONFIG', os.environ.get('ENGINEER_CONFIG')))
     parser.add_argument('--project', help='Project name, repository directory or project TOML')
     commands = parser.add_subparsers(dest='action', required=True)
-    for name in ('start', 'doctor', 'install-service'):
+    for name in ('start', 'restart', 'doctor', 'install-service'):
         sub = commands.add_parser(name)
         sub.add_argument('--host', choices=['codex', 'claude'], default='codex')
-        if name == 'start':
+        if name in ('start', 'restart'):
             sub.add_argument('--detach', action='store_true', help='Run supervisor in background and return to the host chat')
             sub.add_argument('--once', action='store_true', help='One intake/iteration, useful for diagnostics')
             sub.add_argument('--workers', type=int, help='Concurrent task workers; any positive count')
@@ -165,9 +165,25 @@ def main():
     commands.add_parser('poll', help='Poll configured GitHub mentions now')
     commands.add_parser('learn', help='Remember explicit project guidance').add_argument('text')
     commands.add_parser('studio')
+    commands.add_parser('dashboard', help='Interactive project/task picker and live logs')
+    draft = commands.add_parser('draft', help='Explicitly deliver a draft with failed/unverified checks disclosed')
+    draft.add_argument('task')
+    draft.add_argument('--reason', required=True, help='User authorization for this task and current content only')
+    commands.add_parser('reconcile', help='Adopt an existing matching draft without changing GitHub or the tracker').add_argument('task')
 
+    if len(sys.argv) == 1:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            sys.argv.append('dashboard')
+        else:
+            parser.print_help()
+            return
     args = parser.parse_args()
+    state = None
     try:
+        if args.action == 'dashboard':
+            from .dashboard import dashboard
+            dashboard(args.config, args.project)
+            return
         config = load_config(args.config, args.project)
         state = State(config['state_dir'], readonly=args.action in ('status', 'show', 'studio'))
         if args.action in ('watch', 'terminal', 'takeover'):
@@ -178,6 +194,10 @@ def main():
                 takeover(state, config, args.task)
             elif not open_terminal(state, config, args.task):
                 raise RuntimeError('Could not open Terminal; run dotagent watch '+args.task)
+            return
+        if args.action in ('draft', 'reconcile'):
+            from .runtime import finish_draft
+            print(finish_draft(state, config, args.task, args.reason if args.action == 'draft' else None))
             return
         if args.action == 'poll':
             from .github_mentions import poll
@@ -256,6 +276,7 @@ def main():
             state.set('paused', True)
             print('Pause requested; active worker will checkpoint and stop.')
         elif args.action == 'resume':
+            require_current_config(state, config)
             if args.task:
                 from .terminal import return_to_automation
                 if return_to_automation(state, args.task, args.note):
@@ -296,7 +317,10 @@ def main():
                 print('Owned services stopped. Worktree and volumes preserved.')
         elif args.action == 'install-service':
             install_service(config, args.host)
-        elif args.action == 'start':
+        elif args.action in ('start', 'restart'):
+            if args.action == 'restart':
+                stop_supervisor(state)
+            require_current_config(state, config)
             if not doctor(config, args.host):
                 raise RuntimeError('doctor failed; fix prerequisites before startup')
             if args.workers is not None:
@@ -337,6 +361,9 @@ def main():
     except Exception as error:
         print('dotagent: ' + str(error), file=sys.stderr)
         raise SystemExit(1) from None
+    finally:
+        if state is not None:
+            state.db.close()
 
 
 if __name__ == '__main__':

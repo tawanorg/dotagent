@@ -185,6 +185,20 @@ def isolate_compose(model, project, worktree, ports, cpus, memory):
     return model
 
 
+def lfs_pointer_assets(worktree):
+    """Detect unresolved tracked assets before setup/build without blocking unrelated work."""
+    names = git(worktree, 'ls-files', '-z').split('\0')
+    pointers = []
+    for name in filter(None, names):
+        path = Path(worktree) / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            if stream.read(128).startswith(b'version https://git-lfs.github.com/spec/v1\n'):
+                pointers.append(name)
+    return pointers
+
+
 class Environment:
     def __init__(self, state, task, config):
         self.state, self.task, self.config = state, task, config
@@ -204,6 +218,18 @@ class Environment:
     def prepare(self):
         task, config = self.task, self.config
         worktree = prepare_worktree(self.state, task, config)
+        missing_assets = lfs_pointer_assets(worktree)
+        task['limitations'] = [text for text in task.get('limitations', [])
+                               if not text.startswith('Git LFS assets unavailable: ')]
+        if missing_assets:
+            message = ('Git LFS assets unavailable: ' + ', '.join(missing_assets[:20]) +
+                       '. Install git-lfs and run git lfs pull in the task worktree; dependent checks remain unverified.')
+            if task.get('lfs_missing') != missing_assets:
+                self.state.event(task['id'], 'lfs-assets-unavailable', {'paths': missing_assets, 'message': message})
+            task.setdefault('limitations', [])
+            if message not in task['limitations']:
+                task['limitations'].append(message)
+        task['lfs_missing'] = missing_assets
         project = 'eng-' + hashlib.sha256(str(worktree).encode()).hexdigest()[:12]
         envfile = self.directory / 'compose.env'
         if not envfile.exists():
