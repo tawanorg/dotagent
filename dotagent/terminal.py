@@ -162,6 +162,26 @@ def open_terminal(state, config, key):
     return True
 
 
+def event_message(event):
+    """Readable host events, shared by watch and dashboard; strip terminal control sequences."""
+    item = event.get('item', {})
+    kind = event.get('type')
+    message = item.get('text', '') if kind == 'item.completed' and item.get('type') == 'agent_message' else ''
+    if item.get('type') == 'command_execution' and kind in ('item.started', 'item.completed'):
+        message = ('Running: ' if kind == 'item.started' else f"Exit {item.get('exit_code')}: ") + item.get('command', '')
+    if item.get('type') == 'mcp_tool_call' and kind in ('item.started', 'item.completed'):
+        message = f"{kind}: {item.get('server', '')}/{item.get('tool', '')}"
+    if kind == 'assistant':
+        parts = event.get('message', {}).get('content', [])
+        message = '\n'.join(c.get('text', '') for c in parts if c.get('type') == 'text')
+        calls = [c.get('name', '') for c in parts if c.get('type') == 'tool_use']
+        if calls:
+            message += '\nTools: ' + ', '.join(calls)
+    import re
+    message = re.sub(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))', '', message)
+    return redact(''.join(c for c in message if c in '\n\t' or ord(c) >= 32 and ord(c) != 127))
+
+
 def watch(state, config, key):
     if not state.task(key):
         raise ValueError('unknown task')
@@ -193,19 +213,8 @@ def watch(state, config, key):
                             event=json.loads(line)
                         except ValueError:
                             continue
-                        item=event.get('item',{})
-                        message=item.get('text') if event.get('type')=='item.completed' and item.get('type')=='agent_message' else None
-                        if event.get('type')=='assistant':
-                            message='\n'.join(c.get('text','') for c in event.get('message',{}).get('content',[]) if c.get('type')=='text')
-                        if item.get('type') == 'command_execution' and event.get('type') in ('item.started', 'item.completed'):
-                            message = ('Running: ' if event['type'] == 'item.started' else f"Exit {item.get('exit_code')}: ") + item.get('command', '')
-                        if item.get('type') == 'mcp_tool_call' and event.get('type') in ('item.started', 'item.completed'):
-                            message = f"{event['type']}: {item.get('server', '')}/{item.get('tool', '')}"
-                        if event.get('type') == 'assistant':
-                            calls = [c.get('name', '') for c in event.get('message', {}).get('content', []) if c.get('type') == 'tool_use']
-                            if calls:
-                                message = (message or '') + '\nTools: ' + ', '.join(calls)
-                        if message: print(redact(message),flush=True)
+                        message = event_message(event)
+                        if message: print(message, flush=True)
             if sys.stdin.isatty() and select.select([sys.stdin], [], [], 1)[0]:
                 if sys.stdin.readline().strip().lower() == 'q':
                     return

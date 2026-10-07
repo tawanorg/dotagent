@@ -155,19 +155,38 @@ class GitHub:
         task['commit'] = git(cwd, 'rev-parse', 'HEAD')
         self.state.save(task)
 
-    def body(self, attachments, pending=None):
+    def body(self, attachments, pending=None, limited=False):
         task = self.task
+        fingerprint = task['draft_authorization']['revision'] if limited else task['verified_revision']
         lines = [f"<!-- dotagent:{task['id']} -->", task['ticket'].get('url') or f"Direct request: {task['id']}", '',
                  task['summary'], '', task['implementation'], '', '### Local verification', '',
-                 f"Commit: `{task['commit']}`; content fingerprint: `{task['verified_revision']}`.", '']
+                 f"Commit: `{task['commit']}`; content fingerprint: `{fingerprint}`.", '']
+        if limited:
+            lines += ['**DRAFT WITH LIMITATIONS — verification incomplete; not ready to merge.**',
+                      'Explicit user authorization: ' + task['draft_authorization']['reason'], '']
         for evidence in task['evidence']:
-            if evidence['revision'] == task['verified_revision']:
+            if evidence['revision'] == fingerprint:
                 lines += [f"- `{evidence['display']}` — exit {evidence['exit_code']}; {evidence['result']}"]
-        lines += ['', '### Manual testing', '']
+        if limited:
+            required = [(f'gate-{i}', check) for i, check in enumerate(self.config.get('checks', []))]
+            required += [(c['id'], check) for c in task['criteria'] for check in c['checks']]
+            for label, check in required:
+                if not any(e['revision'] == fingerprint and e['criterion'] == label
+                           and e.get('argv') == check['argv'] for e in task['evidence']):
+                    lines += [f"- {label}: `{' '.join(check['argv'])}` — unverified (no current evidence)"]
+            if task.get('ui_changed') and not any(e['revision'] == fingerprint and e['criterion'] == 'browser'
+                                                for e in task['evidence']):
+                lines += ['- Browser behavior, console and network — unverified (no current evidence)']
+            lines += ['- PR screenshot rendering — unverified; inspect the draft before review.']
+            lines += ['- Blocker: ' + b for b in task.get('blockers', [])]
+        lines += ['', '### Manual testing (instructions, not proof of a pass)', '']
         for i, criterion in enumerate(task['criteria'], 1):
             lines += [f"{i}. {criterion['manual']} Expected: {criterion['expected']}"]
             for artifact in task['artifacts']:
                 if artifact['criterion'] == criterion['id']:
+                    if limited and (not artifact.get('redacted') or artifact.get('revision') != fingerprint):
+                        lines += ['\n   Screenshot unverified: stale or sensitive-content review unavailable.\n']
+                        continue
                     identity = artifact['sha256']
                     url = attachments.get(identity)
                     if url:
@@ -184,27 +203,33 @@ class GitHub:
     def attachment_urls(body):
         return dict(re.findall(r'!\[(?:dotagent|engineer)-([a-f0-9]{64})\]\((https://(?:github\.com/user-attachments/assets/|user-images\.githubusercontent\.com/)[^\s)]+)\)', body))
 
-    def deliver(self):
+    def deliver(self, limited=False):
         task = self.task
+        authorization = task.get('draft_authorization', {})
+        if limited and (not authorization.get('reason') or not authorization.get('revision')):
+            raise RuntimeError('explicit task/revision draft authorization required')
+        fingerprint = authorization['revision'] if limited else task.get('verified_revision')
+        if limited and (not task.get('review') or task.get('review_revision') != fingerprint):
+            raise RuntimeError('correctness/requirements review of current content is still required for a limited draft')
         self.validate_remote()
         pr = self.find()
-        if pr and (pr['state'] != 'OPEN' or (not pr['isDraft'] and pr['number'] != task.get('target_pr', {}).get('number'))):
+        if pr and (pr['state'] != 'OPEN' or (not pr['isDraft'] and (limited or pr['number'] != task.get('target_pr', {}).get('number')))):
             raise RuntimeError('existing PR is closed or no longer draft; awaiting human review')
-        if revision(task['worktree']) != task['verified_revision']:
+        if revision(task['worktree']) != fingerprint:
             raise RuntimeError('delivery requires verification of current content')
         self.commit()
-        if revision(task['worktree']) != task['verified_revision']:
+        if revision(task['worktree']) != fingerprint:
             raise RuntimeError('commit no longer matches verification')
         destination = 'HEAD:' + task['target_pr']['branch'] if task.get('target_pr') else task['branch']
         command(['git', '-C', task['worktree'], 'push', '-u', 'origin', destination], timeout=180)
         pr = self.find()
-        if pr and (pr['state'] != 'OPEN' or (not pr['isDraft'] and pr['number'] != task.get('target_pr', {}).get('number'))):
+        if pr and (pr['state'] != 'OPEN' or (not pr['isDraft'] and (limited or pr['number'] != task.get('target_pr', {}).get('number')))):
             raise RuntimeError('existing PR is closed or no longer draft; awaiting human review')
         bodyfile = self.directory / 'pr-body.md'
         attachments = self.attachment_urls(pr['body']) if pr else {}
 
         def write_body(pending=None):
-            body = self.body(attachments, pending)
+            body = self.body(attachments, pending, limited=limited)
             if pr:
                 start, end = f"<!-- dotagent:{task['id']} -->", f"<!-- /dotagent:{task['id']} -->"
                 old = pr['body'].replace(f'<!-- personal-engineer:{task["id"]} -->', start).replace(
@@ -225,6 +250,8 @@ class GitHub:
         task['delivery']['pr'] = pr['url']
         self.state.save(task)
         for artifact in task['artifacts']:
+            if limited and (not artifact.get('redacted') or artifact.get('revision') != fingerprint):
+                continue  # Preserve local evidence; never upload unreviewed or stale screenshots.
             digest = hashlib.sha256(Path(artifact['path']).read_bytes()).hexdigest()
             if digest != artifact['sha256'] or not artifact.get('redacted'):
                 raise RuntimeError('screenshot changed or sensitive-content review missing')
@@ -245,9 +272,11 @@ class GitHub:
         write_body()
         self.gh('pr', 'edit', str(pr['number']), '--body-file', str(bodyfile))
         pr = self.find()
-        if pr['headRefOid'] != task['commit'] or (not pr['isDraft'] and pr['number'] != task.get('target_pr', {}).get('number')):
+        if pr['headRefOid'] != task['commit'] or (not pr['isDraft'] and (limited or pr['number'] != task.get('target_pr', {}).get('number'))):
             raise RuntimeError('PR head/draft read-back mismatch')
         task['delivery']['attachments'] = attachments
         task['delivery']['body_verified'] = True
+        if limited:
+            task['delivery']['verification'] = 'incomplete'
         self.state.save(task)
         return pr['url']

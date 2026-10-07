@@ -40,10 +40,10 @@ def valid_report(report, task):
         for check in criterion['checks']:
             if not check['argv'] or not all(isinstance(a, str) for a in check['argv']):
                 raise RuntimeError('check command must be an argv array')
-    if report['action'] != 'blocked' and not report['ui_changed'] and not any(
+    if report['action'] == 'verify' and not report['ui_changed'] and not any(
             c.get('kind') == 'running_app' for criterion in report['criteria'] for c in criterion['checks']):
         raise RuntimeError('changed behavior must also be exercised against the running app')
-    if task['criteria'] and task['criteria'] != report['criteria']:
+    if any(criterion not in report['criteria'] for criterion in task['criteria']):
         raise RuntimeError('criteria are frozen; propose changes to the user instead of weakening checks')
 
 
@@ -74,7 +74,8 @@ the runtime then starts Compose and executes every frozen criterion and mandator
 Each criterion needs an argv command that exits nonzero if unmet, cwd relative to the worktree,
 and kind=test or running_app. At least one check must exercise changed behavior against the live
 application (DOTAGENT_BASE_URL environment variable), unless the UI browser scenario supplies that.
-numbered-test-ready manual instructions and a precise expected result. Preserve all frozen criteria.
+numbered-test-ready manual instructions and a precise expected result. Preserve all frozen criteria unchanged; you may append additional criteria. Planning checkpoints
+may defer the running-app criterion until implementation, but action=verify requires it.
 For UI changes write a browser scenario outside source at {directory / 'behavior.mjs'}.
 It must export default async function({{page, expect, baseURL, evidence}}), exercise the actual interaction,
 assert its expected state, and call await evidence(criterionId, description) for successful changed states.
@@ -128,9 +129,22 @@ def run_check(state, task, check, config, label):
 
 
 def verify(state, task, config):
+    if not task['ui_changed'] and not any(c.get('kind') == 'running_app'
+            for criterion in task['criteria'] for c in criterion['checks']):
+        raise RuntimeError('changed behavior must also be exercised against the running app')
+    task.pop('verified_revision', None)
     environment = Environment(state, task, config)
+    environment.prepare()
+    missing_assets = task.get('lfs_missing', [])
+    if missing_assets:
+        log = state.directory(task['id']) / f'lfs-preflight-{time.time_ns()}.log'
+        atomic(log, '\n'.join(missing_assets) + '\n')
+        task['evidence'].append({'display': 'Git LFS asset preflight', 'argv': [],
+            'exit_code': None, 'result': 'unverified: unresolved Git LFS assets',
+            'revision': revision(task['worktree']), 'criterion': 'lfs-assets', 'log': str(log), 'at': time.time()})
+        state.save(task)
     environment.start()
-    passed = True
+    passed = not missing_assets
     for index, check in enumerate(config['checks']):
         passed = run_check(state, task, check, config, f'gate-{index}') and passed
     for criterion in task['criteria']:
@@ -209,6 +223,7 @@ def perform(state, task, config):
             raise RuntimeError('visible source changes require browser verification and screenshot evidence')
         if report['action'] == 'verify' and not report['review']:
             raise RuntimeError('correctness/requirements review evidence is required')
+        task['review_revision'] = revision(task['worktree']) if report['review'] else None
         outcome = {'action': report['action'], 'blockers': report['blockers'], 'usage': usage}
     elif task['phase'] == 'verify':
         outcome = {'passed': verify(state, task, project), 'uiChanged': task['ui_changed']}
@@ -322,6 +337,55 @@ def recover_iteration(state):
         else:
             raise RuntimeError('previous worker still holds iteration lock; refusing duplicate execution')
     state.set('iteration_worker', None)
+
+
+def finish_draft(state, config, key, reason=None):
+    """Explicit local-only review handoff, under the task's writer lock; never sync trackers."""
+    scoped = type(state)(state.root, scope=key)
+    try:
+        with scoped.lock('iteration'):
+            task = state.task(key)
+            if not task or not task.get('worktree'):
+                raise RuntimeError('task has no owned worktree')
+            if task['status'] == 'cancelled' or (task['status'] == 'active' and not state.get('paused')):
+                raise RuntimeError('pause the project or wait for the task to block before draft handoff')
+            if git(task['worktree'], 'branch', '--show-current') != task['branch']:
+                raise RuntimeError('task worktree changed branch; reconcile ownership first')
+            github = GitHub(state, task, config['repository'])
+            github.validate_remote()
+            fingerprint = revision(task['worktree'])
+            if reason is not None:
+                instructions = state.instructions(key)
+                if instructions and instructions[-1]['seq'] > task.get('instructions_ack', 0):
+                    raise RuntimeError('new task guidance must be reviewed before draft delivery')
+                if not reason.strip():
+                    raise ValueError('a reason is required for draft-with-limitations')
+                if not task.get('criteria') or not task.get('changed_files') or not task.get('review') or task.get('review_revision') != fingerprint:
+                    raise RuntimeError('criteria, implementation files and correctness review are required')
+                for evidence in task['evidence']:
+                    if evidence['revision'] == fingerprint and not Path(evidence['log']).is_file():
+                        raise RuntimeError('current verification log missing; restore evidence or rerun the check')
+                task['draft_authorization'] = {'reason': reason.strip(), 'revision': fingerprint, 'at': time.time()}
+                state.save(task)
+                state.event(key, 'draft-authorized', task['draft_authorization'])
+                url = github.deliver(limited=True)
+                task['delivery']['verification'] = 'incomplete'
+            else:
+                pr = github.find()
+                if not pr or pr['state'] != 'OPEN' or not pr['isDraft']:
+                    raise RuntimeError('no open draft exists for this task branch')
+                if git(task['worktree'], 'status', '--porcelain') or pr['headRefOid'] != git(task['worktree'], 'rev-parse', 'HEAD'):
+                    raise RuntimeError('external draft head differs from the clean local task branch')
+                url = pr['url']
+                task['delivery'].update(pr=url, external=True, verification='unverified')
+                state.event(key, 'external-draft-reconciled', {'pr': url, 'revision': fingerprint})
+            task.update(status='review', phase='review',
+                        next_action='Human review of draft and disclosed limitations; no tracker completion performed')
+            state.save(task)
+            state.handover(task)
+            return url
+    finally:
+        scoped.db.close()
 
 
 def reconcile(state, task, config):

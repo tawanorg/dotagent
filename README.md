@@ -109,12 +109,16 @@ and memory. [Configuration and project selection →](docs/usage.md#one-project-
 
 ### 3. Start your day
 
-From your configured repository:
+Open the interactive project picker:
 
 ```sh
-dotagent doctor --host codex
-dotagent start --host codex
+dotagent
 ```
+
+Use the on-screen keys to select a project/task, read live worker logs, start or
+pause work, and open Studio, a worker or its PR. Opening the dashboard does not
+start intake. `dotagent dashboard` is the explicit equivalent; CLI commands remain
+available for scripts. [Dashboard controls →](docs/usage.md#terminal-dashboard)
 
 Use `--host claude` for Claude Code. Startup opens the project's Mastra dashboard.
 Start and instruct dotagent from your coding assistant as well:
@@ -232,7 +236,7 @@ python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The recorded implementation validation includes **41 Python tests and 3 Mastra
+The recorded implementation validation includes **52 Python tests and 3 Mastra
 workflow tests**, plus a production build, native Codex resume and browser evidence.
 See [validation](VALIDATION.md) for commands, receipts and unverified areas.
 

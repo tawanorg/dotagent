@@ -1,5 +1,27 @@
 # dotagent validation — 7 October 2026
 
+## QB-18 harness hardening
+
+- Python regression suite: 52 passed, including 11 new workflow/dashboard checks.
+  Tests cover fail-closed configuration drift, start worker/host preferences,
+  planning checkpoints without weakening existing criteria, LFS pointers,
+  stale draft authorization/review, truthful failed/unverified evidence,
+  local Git push and idempotent draft replay, and external-draft reconciliation.
+- `python3 tests/dashboard_pty.py` and the `--no-args` variant render the real curses
+  dashboard through a PTY: project/task/blocker/live logs, host toggle and quit.
+  Task data and pause state stay unchanged; no intake/supervisor is started.
+- `npm run typecheck`, all 3 Mastra workflow tests, and `npm run build` passed.
+  Build still emits the existing Mastra static configuration warning before
+  successfully producing Studio and server output.
+- Self-review covered process ownership, current-content evidence, explicit
+  draft authorization, preserved verification failures, and readonly dashboard
+  discovery. Native Codex chat-side panel support remains unverified/unavailable:
+  the documented conversation-panel entrypoint targets ChatGPT and this client
+  exposed no in-app browser.
+- Live restart of an installed project, live remote exception-draft publishing,
+  and interactive Claude takeover are not established by these isolated checks.
+  External tracker completion, merge and deployment were not performed.
+
 ## Public overview and reusable project setup
 
 - README presents the developer workflow, real demo captures, native handoff and the installed technology stack; detailed commands remain in docs/usage.md.

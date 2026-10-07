@@ -10,6 +10,7 @@ import uuid
 import json
 import urllib.request
 import webbrowser
+from types import SimpleNamespace
 
 from .hosts import command, process_record, stop_group
 from .runtime import recover_child, recover_iteration
@@ -136,7 +137,68 @@ def stalled_task(state, config):
     return None
 
 
+def require_current_config(state, config):
+    """Never unpause a supervisor whose intake scope differs from the selected project."""
+    try:
+        with state.lock():
+            return
+    except RuntimeError:
+        pass
+    try:
+        running = json.loads((state.root / 'runtime-config.json').read_text())
+    except (OSError, ValueError):
+        running = {}
+    expected = {k: v for k, v in config.items() if k != '_host'}
+    actual = {k: v for k, v in running.items() if k != '_host'}
+    if actual != expected:
+        state.set('paused', True)
+        raise RuntimeError('Project configuration changed or is unknown; paused before intake. Run dotagent restart to apply it.')
+
+
+def stop_supervisor(state, timeout=15):
+    """Signal only the identity recorded by this project's supervisor."""
+    state.set('paused', True)
+    try:
+        with state.lock():
+            return
+    except RuntimeError:
+        pass
+    record = state.get('supervisor') or {}
+    from .terminal import live
+    if not live(record):
+        raise RuntimeError('Cannot verify supervisor ownership; stop this project service explicitly before restarting.')
+    os.kill(record['pid'], signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while live(record):
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Supervisor has not stopped; project remains paused. Inspect supervisor.log.')
+        time.sleep(0.1)
+
+
+def wait_for_port(port, timeout=5):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.socket() as probe:
+                probe.bind(('127.0.0.1', port))
+            return
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'Studio port {port} is occupied after owned-process recovery; no unrelated process was stopped.') from error
+            time.sleep(0.1)
+
+
 def supervise(state, config, host, once=False, browser=False):
+    def terminate(*_):
+        raise KeyboardInterrupt
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        _supervise(state, config, host, once, browser)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _supervise(state, config, host, once=False, browser=False):
     root = Path(__file__).resolve().parents[1]
     runner, server = root / 'dist/src/runner.js', root / '.mastra/output/index.mjs'
     if not runner.exists() or not server.exists():
@@ -147,15 +209,14 @@ def supervise(state, config, host, once=False, browser=False):
         if interrupted:
             record_failure(state, config, 'Supervisor interrupted during an engineering phase', interrupted)
         port = config.get('studio', {}).get('port', 4111)
-        with socket.socket() as probe:
-            probe.bind(('127.0.0.1', port))
+        wait_for_port(port)
         config['_host'] = host
         config_file = state.root / 'runtime-config.json'
         atomic(config_file, config)
         env = dict(os.environ, DOTAGENT_RUNTIME_CONFIG=str(config_file),
                    DOTAGENT_PYTHON=sys.executable, PYTHONPATH=str(root),
                    MASTRA_STUDIO_PATH=str(root / '.mastra/output/studio'))
-        state.set('supervisor', {'pid': os.getpid(), 'started': time.time(), 'host': host})
+        state.set('supervisor', {**process_record(SimpleNamespace(pid=os.getpid()), None, [], state.root), 'host': host})
         state.set('studio_url', f'http://127.0.0.1:{port}/workflows')
         failures = state.get('process_failures', 0)
         while True:
