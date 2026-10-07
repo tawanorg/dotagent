@@ -5,7 +5,9 @@
 - Python subprocess tests cover replayed receipts, stale workflow checkpoints and durable timeout accounting.
 - Project tests cover registry/current-directory/worktree identity, separate task histories and brain ownership, reopen, correction history and rollback.
 - Actual supervisor test killed scheduler PID 4779; replacement PID 5601 started and pause remained true.
-- Studio workflow graph and saved synthetic run inspected in Chromium; no console errors or failed requests observed. Screenshot originals remain outside Git.
+- Studio workflow graph, two labelled worker runs and saved suspension inspected in Chromium; no console errors or failed requests observed. Screenshot originals remain outside Git.
+- Draft PR https://github.com/tawanorg/dotagent/pull/1 contains two uploaded attachments beside manual testing step 3. Both decode at 1600×1000 in GitHub's authenticated API `body_html`. The private PR page returned 404 in the unsigned browser; full signed-in PR-page rendering remains unverified.
+- Executable code tested at `be5cb0b`; subsequent validation-only documentation changes do not change that code.
 - Interactive dashboard-open test passes; the OS browser opened the registered Coterie dashboard at http://127.0.0.1:46473/workflows. No backlog execution was unpaused.
 - Real parent scheduler launched two task workers concurrently; both verified their live Docker apps and suspended at the configured fixture iteration limit. Read-only GitHub lookup used a fixture; no Jira/model calls were made.
 - Twelve concurrent subprocesses could not over-reserve the shared USD budget; settlement retries did not double-refund it.
