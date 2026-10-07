@@ -8,6 +8,8 @@ root = Path(__file__).resolve().parents[1]
 links = {
     Path.home() / '.local/bin/dotagent': root / 'bin/dotagent',
     Path.home() / '.local/share/dotagent': root / 'dotagent',
+    Path.home() / '.agents/skills/dotagent': root / 'skills/codex/dotagent',
+    Path.home() / '.claude/skills/dotagent': root / 'skills/claude/dotagent',
 }
 for target, source in links.items():
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -20,6 +22,6 @@ os.chmod(root / 'bin/dotagent', 0o755)
 config = Path.home() / '.config/dotagent/config.toml'
 config.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 if not config.exists():
-    shutil.copyfile(root / 'dotagent/config.example.toml', config)
+    config.write_text('# Personal defaults only. Configure each project separately.\n[host]\nstall_seconds = 600\n[limits]\nmax_iterations = 30\n')
     os.chmod(config, 0o600)
 print(f'Installed dotagent. Configuration: {config}')

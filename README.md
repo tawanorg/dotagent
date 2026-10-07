@@ -1,210 +1,247 @@
-# Dotagent
+<div align="center">
 
-A persistent Jira → isolated worktree → local verification → draft PR runtime.
-Python 3.11+ standard library owns lifecycle and SQLite state. Native Claude Code
-or Codex owns each bounded engineering iteration using its existing login.
+# dotagent
 
-## Install and run
+### Put your coding agent to work. Stay in control.
 
-From this dotfiles checkout:
+A persistent engineering worker for **Claude Code** and **Codex**, orchestrated by **Mastra**.
+
+[Get started](#get-started) · [How it works](#how-it-works) · [See the demo](#see-it-in-action) · [Technology stack](#technology-stack) · [User guide](docs/usage.md)
+
+![dotagent — conceptual promotional artwork](https://github.com/user-attachments/assets/b962be2a-dada-4507-bd89-95efbb8f4441)
+
+*Your tools. Your repositories. A workflow you can inspect and take over.*
+
+</div>
+
+Describe a task in your coding assistant—or mention `@dotagent` on GitHub—and let
+your running machine carry the work through implementation, local verification
+and draft-PR delivery. Come back to a visible worker terminal and a saved Mastra
+run. Step into the native coding session whenever you need to steer.
+
+**Early development · macOS first.** Codex execution and interactive resume have
+been exercised locally. Interactive Claude takeover still needs live validation.
+See [actual validation results and limitations](VALIDATION.md).
+
+## Why developers use dotagent
+
+| What you need | What dotagent does |
+| --- | --- |
+| Start work without a long setup conversation | Accepts natural-language requests through Claude/Codex skills, authorized GitHub mentions or optional Jira intake. |
+| Keep work moving between sessions | Persists criteria, decisions, evidence and the next action; resumes interrupted work within configured limits. |
+| Keep parallel tasks separate | Gives each task an owned worktree, branch, Compose project, ports and writable data. |
+| Know what is happening | Opens Mastra Studio and a visible task terminal with progress and commands. |
+| Step in when judgment matters | Stops task automation before opening the saved native host conversation; checks your changes when you return control. |
+| Review evidence alongside code | Runs project gates and the application, captures relevant UI evidence and prepares a draft PR with testing instructions. |
+| Build knowledge about each project | Retains sourced lessons and explicit guidance, with correction history and separate memory per repository. |
+
+## How it works
+
+```mermaid
+flowchart TD
+    request["Describe work in Claude / Codex"]
+    mention["Mention @dotagent on GitHub"]
+    jira["Assigned Jira backlog · optional"]
+    orchestrator["Mastra + supervisor<br/>Claim task · save progress · open Studio"]
+    workspace["Isolated task workspace<br/>Git worktree + branch + Docker services"]
+    engineer["Native Claude Code or Codex<br/>Investigate → implement → review"]
+    verify{"Local verification<br/>Project gates + running app<br/>Browser checks for UI changes"}
+    delivery["Draft PR + source update<br/>Code · test results · screenshot evidence"]
+    review["You review and decide what ships"]
+    human["Take over in the native terminal<br/>Stop automation → chat / edit → resume"]
+    memory[("Project memory + handover<br/>Criteria · decisions · evidence · next action")]
+
+    request --> orchestrator
+    mention --> orchestrator
+    jira --> orchestrator
+    orchestrator --> workspace --> engineer --> verify
+    verify -- "Needs a fix" --> engineer
+    verify -- "Checks pass" --> delivery --> review
+    engineer <-->|"Exclusive handoff"| human
+    orchestrator -. "Load saved context" .-> memory
+    engineer -. "Persist checkpoint" .-> memory
+    memory -. "Context for the next iteration" .-> engineer
+
+    classDef input fill:#edf5ee,stroke:#56846b,color:#173c33
+    classDef work fill:#173c33,stroke:#173c33,color:#f4f7f3
+    classDef control fill:#f5ecd9,stroke:#b49455,color:#463b26
+    class request,mention,jira input
+    class orchestrator,workspace,engineer,delivery work
+    class verify,review,human,memory control
+```
+
+[Download the workflow diagram](https://github.com/user-attachments/assets/288cb9e6-2b88-4958-be88-0fb93b5feb2c) for presentations or sharing.
+
+A response ending does not finish the task. Failed checks send it back through the
+engineering loop. Missing access or a product decision becomes a recorded blocker.
+Completion requires verified criteria and delivery artifacts. You own the review;
+dotagent does not automatically merge, deploy or publish packages.
+
+## Get started
+
+### 1. Install
+
+You need **Python 3.11+**, **Node.js 22.13+**, Git, Docker Compose, authenticated
+GitHub CLI (`gh`), and a locally authenticated Claude Code or Codex CLI. Codex must
+support `--no-daemon`; the tested version is 0.160.1. Screenshot delivery requires
+`gh pr edit --attach`. `dotagent doctor` checks installed capabilities.
 
 ```sh
+git clone https://github.com/tawanorg/dotagent.git
+cd dotagent
+npm ci
+npm run build
 python3 dotagent/install.py
+```
+
+Add `~/.local/bin` to your PATH. The installer adds the host skills without replacing
+unrelated configuration. Reload your coding assistant to discover them.
+
+### 2. Configure your repository
+
+Copy [the project template](dotagent/config.example.toml) to your repository's
+`.dotagent.toml`, or register `~/.config/dotagent/projects/my-project.toml`.
+Set the real repository path, GitHub repository, Compose services, verification
+commands and Playwright location. The template contains placeholders to replace.
+
+Each repository owns its backlog settings, task history, environments, Mastra runs
+and memory. [Configuration and project selection →](docs/usage.md#one-project-one-brain)
+
+### 3. Start your day
+
+From your configured repository:
+
+```sh
 dotagent doctor --host codex
 dotagent start --host codex
-# Or: dotagent start --host claude
 ```
 
-`~/.local/bin` must be on PATH. The installer adds only the CLI/playbook links and
-a config file if absent; it does not rerun the broad dotfiles installer or replace
-existing host settings. Review `~/.config/dotagent/config.toml`: the provided
-Coterie adapter uses `Jerawine/coterie-qb-prototype`, your assigned QB backlog,
-`origin/main`, and the configured local checkout. No credentials belong there.
+Use `--host claude` for Claude Code. Startup opens the project's Mastra dashboard.
+Start and instruct dotagent from your coding assistant as well:
 
-Keep the startup command in a terminal. For login/restart/wake resumption:
+```text
+# Claude Code
+/dotagent Add accessible Active and Done filters. Verify the app and open a draft PR.
+
+# Codex: invoke the skill with $dotagent or select it in /skills
+$dotagent Add accessible Active and Done filters. Verify the app and open a draft PR.
+```
+
+Keep talking: “show progress”, “preserve keyboard shortcuts”, or “remember this
+approach for this project”. Task guidance and reusable project preferences are
+stored separately. [Commands and controls →](docs/usage.md#tasks-and-instructions)
+
+## Start work from your phone
+
+On a configured GitHub issue or PR:
+
+```text
+@dotagent work on this issue
+@dotagent fix this PR using the review context; preserve the existing API
+```
+
+Enable the project's mention listener and install its login service on your
+always-on Mac. The worker polls GitHub through `gh`, accepts only authorized
+senders and deduplicates requests. No public webhook endpoint is required.
+
+Your Mac must be awake and connected. [Set up GitHub triggers →](docs/usage.md#trigger-your-mac-worker-from-github)
+
+## Come back and take over
+
+Each active task opens a visible macOS Terminal. **Enter or Ctrl-C** stops its
+worker and opens the saved Claude/Codex conversation interactively. Other tasks
+keep running. After you exit, the task stays held until you return it:
 
 ```sh
-dotagent install-service --host codex
-dotagent status
-dotagent pause
-dotagent resume
-dotagent cancel QB-123
-dotagent resume QB-123     # Explicitly retry after resolving a blocker
-dotagent cleanup QB-123    # Stop owned services; preserve worktree and data
+dotagent terminal TASK_ID          # Open the visible worker
+dotagent takeover TASK_ID          # Take control in this terminal
+dotagent resume TASK_ID            # Reconcile your edits and rerun verification
 ```
 
-The macOS LaunchAgent uses RunAtLoad/KeepAlive and a 30-second restart throttle.
-It resumes after login and wake; no laptop can execute while asleep or powered off.
-Pause is persisted, including across restarts. Cancel is task-specific. Cleanup
-never prunes Docker, deletes data or removes a worktree. Use your existing worktree
-cleanup skill after review/merge when deliberate deletion is wanted.
-An interactive `dotagent start --host …` resumes an installed paused supervisor
-and applies the host choice to subsequent iterations; it does not create a second
-worker. Service restarts preserve a deliberate pause.
+This uses supported session resume. If the task has no saved host conversation,
+a new native session loads its handover. You can configure headless operation.
 
-`start --once` performs one intake/iteration for diagnosis. It is not an end-to-end
-completion flag. The regular supervisor keeps iterating and polls while idle.
+## See it in action
 
-## Architecture and ownership
+A small Todo app gives dotagent a real, observable change: add accessible All,
+Active and Done filters without changing the existing persistence behavior.
 
-| Concern | Owner |
+[Example source](examples/todo/README.md) · [Real GitHub issue](https://github.com/tawanorg/dotagent-todo-demo/issues/1) · [Draft PR with evidence](https://github.com/tawanorg/dotagent-todo-demo/pull/2)
+
+### From a request to a traceable run
+
+The issue card below contains the actual issue and authorized mention, presented
+as an API-backed evidence report. The Studio image is an actual workflow capture.
+
+| 1. A real request | 2. A visible Mastra run |
 | --- | --- |
-| Claims, lifecycle, retries, controls, budgets, evidence | Python supervisor + SQLite |
-| Model/tool execution and native compaction | Selected authenticated CLI |
-| Canonical engineering practices | Versioned `PLAYBOOK.md` |
-| Jira authentication | Configured host's Atlassian MCP (Codex by default for both workers) |
-| GitHub authentication/upload | `gh` native login and `--attach` |
-| App isolation/readiness | Per-repository Compose adapter |
-| Browser tests | Existing Playwright dependency; host MCP for interactive diagnosis/PR rendering |
+| ![Actual GitHub issue and trigger, presented as an evidence report](https://github.com/user-attachments/assets/65d431ba-3770-4831-8963-3e4ae62aceb5) | ![Actual Mastra Studio workflow during implementation](https://github.com/user-attachments/assets/c8ebfa75-016e-41da-a10e-292d3e730108) |
 
-Mastra offers workflow snapshots/checkpoints, but it would add a framework without
-removing Git/Docker reconciliation. Hermes supplies another execution/memory host;
-using it here would overlap native CLI ownership. Neither is installed or required.
-See [capability research](CAPABILITIES.md) for current documentation and observed
-versions. This is one logical agent with two thin host adapters, not chained agents.
+### From baseline behavior to a tested change
 
-Use the installed Matt Pocock skills selectively as routed in the playbook. Its
-`handoff` skill writes a summary; its Claude background launcher does not manage
-this runtime. The supervisor reuses the handover content convention and launches
-replacement sessions itself. It never sends Claude slash commands to Codex.
+| Before: all tasks, no filters | After: Active shows unfinished tasks |
+| --- | --- |
+| ![Running Todo app before filters](https://github.com/user-attachments/assets/9cb11450-e222-4e56-bb8a-7fa36f169d46) | ![Running Todo app with the Active filter selected](https://github.com/user-attachments/assets/9bac0082-868a-458c-8913-8e1471eae013) |
 
-## State and recovery
+Seven runtime checks passed, including browser verification. A draft PR exists
+with uploaded screenshots; the saved task is still under human control, so final
+automated delivery reconciliation is not claimed complete. Screenshot originals
+stay outside Git. The banner is conceptual promotional artwork; the app and
+Studio captures show the real demo.
 
-Operational files live in `~/.local/state/dotagent` with private permissions:
+## Technology stack
 
-- `state.sqlite`: unique task claims, criteria, decisions, source ticket data,
-  attempts, blockers, ownership, delivery state and event/usage ledger.
-- `tasks/<hash>/handover.{json,md}`: durable task checkpoint and next action.
-- `tasks/<hash>/notes.md`: worker notes before long operations.
-- `tasks/<hash>/iteration-*/`: prompt, schema, host events, errors and result.
-- `tasks/<hash>/compose.json`: resolved owned Compose configuration.
-- `tasks/<hash>/check-*.log`: exact check output; evidence records include argv,
-  cwd, exit status, content fingerprint and Git commit.
-- `tasks/<hash>/evidence-*.png`: original screenshots; never staged into Git.
-- `project-facts/`: inspected project setup facts; separate from task state.
-- `proposals/`: proposed personal-playbook corrections, reviewed as explicit diffs.
+| Layer | Technology | Responsibility |
+| --- | --- | --- |
+| Orchestration | **TypeScript 6 + Mastra** | Persistent workflows, the engineering iteration loop, checkpoints and Studio. |
+| Workflow storage | **LibSQL + Mastra Observability** | Saved runs, snapshots and traces. |
+| Local runtime | **Python 3.11+**, standard library | CLI, process supervisor, resource ownership, integrations and recovery. |
+| Operational state and memory | **SQLite** | Task claims, evidence, delivery receipts and sourced project knowledge with correction history. |
+| Engineering execution | **Claude Code or Codex CLI** | Native model/tool execution, authentication and interactive session resume. |
+| Workspace isolation | **Git worktrees + Docker Compose** | Per-task branches, services, ports and mutable data. |
+| Browser verification | **Playwright / Chromium** | Actual application interaction, console/network checks, screenshots and image rendering checks. |
+| Delivery and remote triggers | **GitHub CLI + GitHub API** | Issue/review intake, branches, PRs, attachments and idempotent updates. |
+| Optional backlog integration | **Authenticated local Atlassian MCP** | Jira intake and progress updates through a configured native host. |
+| Workflow validation | **Zod + Node.js tests + Python unittest** | Typed workflow contracts and regression checks. |
 
-SQLite uniqueness prevents duplicate ticket claims. An OS flock prevents duplicate
-supervisors and iterations. Process identities and owned process groups allow
-recovery without killing unrelated terminals. A new worker reads the handover,
-reconciles actual state, and resumes the next incomplete phase. Changed content
-invalidates verification. A plain `DONE` response cannot complete a task.
+Exact dependency versions live in [package.json](package.json) and
+[package-lock.json](package-lock.json). The Todo example uses dependency-free
+Node.js, HTML, CSS and browser JavaScript.
 
-Repository metadata also records ticket ownership, refusing adoption by another
-state directory. Claims are local to one machine. Do not run two machines
-against the same backlog: distributed claiming is not implemented. Concurrency is
-explicitly restricted to one task, although ports/resources are owned per task.
-Existing actionable work precedes fresh work; then configured Jira priority wins,
-with oldest-updated/key tie-breaking. Unknown priorities block selection. Review,
-cancelled and locally blocked tasks are excluded until explicitly resumed.
+Host integrations such as Serena, Context7, Firecrawl and Argent follow the
+[canonical engineering playbook](dotagent/PLAYBOOK.md) when installed and relevant.
+They are not separate orchestration runtimes. Project memory currently uses local
+search and source history; **Hermes and a vector database are not integrated**.
+Native CLI authentication stays with the host—dotagent does not turn subscription
+credentials into API credentials.
 
-## Configuration and limits
+## Built for inspectable work
 
-The example TOML is the schema reference. Commands are argv arrays with a worktree
-relative cwd, not interpolated shell strings. `checks` are mandatory and independent
-of worker-authored criteria. Add repository-specific package/financial gates there
-or in the frozen criterion checks before implementation. Criteria cannot change
-silently in later iterations.
+- **Persistent, bounded execution.** Heartbeats, crash recovery, retry backoff and configurable time, iteration and resource limits.
+- **Independent project ownership.** Each repository has its own state and brain; workers in that repository share its dashboard and project knowledge.
+- **Configurable concurrency.** Start with one worker, then use `--workers N`. Each task keeps its own worktree and environment.
+- **Evidence before completion.** Project gates, running-app verification and relevant UI screenshots remain required. Unavailable checks stay unverified.
+- **Explicit human control.** A native human session excludes automated writers until you return the task.
 
-Each host process has a duration and no-output timeout. Each task has iteration,
-wall-time, retry and no-progress limits. Retries use bounded exponential backoff.
-Fresh host sessions bound cross-iteration context growth; native host compaction
-handles context inside an iteration. There is no portable reliable “90% context”
-signal, so the runtime does not pretend to monitor one.
-
-`limits.max_spend_usd`, when set, is a persistent aggregate USD budget covering
-workers and the Jira bridge. Each Claude call reserves its maximum budget before
-launch; unknown/failed costs retain the reservation. Native Claude budget enforcement
-is used. Doctor rejects this option when either host is Codex because subscription
-usage reports tokens but no reliable USD charge. Otherwise dollar cost is shown
-as unknown and time/iteration limits remain enforced. Clear/increase limits
-explicitly; resume does not silently erase consumed resources. Separate MCP/service
-credits are not exposed as CLI model cost and must be capped at their providers.
-
-Workers inherit native permissions. Codex defaults to workspace-write; Claude to
-acceptEdits with noninteractive permission prompts disabled. Required commands
-denied by policy remain blocked. Configure host-native rules/permissions for trusted
-repositories; the runtime does not copy OAuth tokens or bypass all permissions.
-
-## Environments
-
-The adapter resolves Compose with a sanitized environment, allocates unique loopback
-ports, rewrites project volume/network identities, adds ownership labels and applies
-per-service CPU/memory limits. External volumes/networks, privileged containers and
-writable binds outside the task worktree are rejected. Image/build caches are shared;
-mutable databases, auth, search and mail storage are task-specific.
-Blocked, cancelled and review tasks have their owned services stopped before the
-next task, retaining worktrees/data. Set `repository.keep_inactive_environments=true`
-only when deliberately keeping those stacks running for manual review.
-
-Coterie pins all DB clients to its internal task Postgres, sets local auth mode and
-matching app/Keycloak public URLs, and excludes inherited production DB/Graph/SMTP
-credentials. All eight services and four setup jobs must pass readiness. Previously
-applied SQL migrations cannot be modified/deleted without stopping for inspection.
-Host checks receive explicit task-local database URLs. Destructive Postgres checks
-use a separate `dotagent_test` database in that task's own database container.
-Ports are transactionally reserved; Docker remains the final bind authority, so an
-external process racing for a port produces an observable startup failure.
-
-Ignored files are copied only through `repository.copy_ignored` explicit filenames;
-symlinks/escapes/nonignored destinations are rejected. Complex `.worktreeinclude`
-patterns are intentionally not approximated: translate the needed files into this
-explicit allowlist. Local synthetic defaults usually need no copied secrets.
-
-## Verification and delivery
-
-The supervisor starts Docker Compose, waits for health and jobs, runs required gates
-and criterion commands, then runs the UI scenario if applicable. The browser runner
-captures console errors, failed requests and unexpected HTTP errors. Successful
-evidence captures are separate from failure-only smoke screenshots. Sensitive-content
-review happens before upload. App interactions must exercise the changed behavior;
-health checks alone are not acceptance evidence.
-
-The runtime commits only recorded task files and refuses unrelated staged changes.
-Commit hooks remain enabled; changes made by hooks invalidate verification. PRs are
-looked up by branch, created as drafts, then updated inside a managed body section.
-Human text outside that section is preserved. Ready/closed PRs stop further delivery.
-
-GitHub CLI 2.102.0 supports `gh pr edit --attach`. The runtime uploads one screenshot
-at a time, reconciles the actual body even after nonzero/partial results, and identifies
-uploads by content hash. Local references are never accepted as delivered evidence.
-Browser inspection must confirm images actually render in the PR. Missing browser
-authentication leaves evidence incomplete, with originals preserved locally.
-
-Jira updates use one stable marker comment, found through paginated reads, updated
-and read back through MCP. A write whose response is lost is reconciled on retry.
-The workflow never merges, deploys, publishes packages or marks tickets done.
-
-## Validation and troubleshooting
+## Development and current limits
 
 ```sh
+npm run typecheck
+npm test
 python3 -m unittest discover -s tests -v
-python3 tests/dotagent_live.py /absolute/path/to/node_modules/@playwright/test
+npm run build
 ```
 
-The opt-in live check starts two Docker apps, proves port/data isolation, runs a
-browser interaction with console/network checks, injects a real behavior failure,
-verifies rejection, fixes it and reruns. It stops only its own services and preserves
-its ownership/evidence receipt under `~/.local/state/dotagent-validation`.
+The recorded implementation validation includes **41 Python tests and 3 Mastra
+workflow tests**, plus a production build, native Codex resume and browser evidence.
+See [validation](VALIDATION.md) for commands, receipts and unverified areas.
 
-Use `dotagent status --json` and the task logs for failures. `doctor` checks binaries,
-host/GitHub auth, Docker, Compose, refs, disk space and attachment support; actual
-Jira/browser permissions are verified by live calls. Authenticate Jira using
-`codex mcp login atlassian`; do not paste credentials into tickets or prompts.
-If the host lacks a browser, Playwright browser install or MCP permission, keep the
-affected criterion unverified. `Too many open files` is an OS resource error, not a
-reason to kill unrelated processes or globally clean Docker.
+Claims are local to one machine. macOS login startup is implemented; always-on
+Linux deployment uses a manually configured systemd service. A sleeping or powered-off
+machine cannot execute. Codex subscription dollar usage may be unknown; hard USD
+caps require cost-reporting hosts. Interactive Claude takeover and physical
+sleep/reboot remain unverified. There is no automatic merge or deployment.
 
-For an always-on Linux machine, install the same runtime and native CLIs, authenticate
-them there using supported mechanisms, and supervise this command with systemd:
+---
 
-```ini
-[Service]
-ExecStart=/absolute/python3 /absolute/dotfiles/bin/dotagent start --host codex
-Restart=on-failure
-RestartSec=30
-```
-
-Set an explicit PATH and configuration/state paths. Use one machine as backlog
-owner. Browser authentication and Docker resources must be provisioned on that
-machine; a laptop's credentials and local paths do not migrate automatically.
+[User guide](docs/usage.md) · [Project template](dotagent/config.example.toml) · [Engineering playbook](dotagent/PLAYBOOK.md) · [Validation](VALIDATION.md) · [Integration research](CAPABILITIES.md)

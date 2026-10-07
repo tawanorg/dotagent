@@ -1,8 +1,18 @@
 # Dotagent capability research — 2026-10-07
 
-## Recommendation
+## Current architecture
 
-Use one Python stdlib supervisor/state machine (SQLite + subprocess + process lock) with native Codex/Claude CLI workers. It owns ticket lifecycle, ownership, verification ledger, bounded retries, budgets and delivery reconciliation. Native hosts own model/tool execution and context management. Canonical playbook is versioned source; operational checkpoints are external durable files; project facts and personal preference proposals are separate. No Mastra or Hermes runtime needed for one laptop and one active task. Both can be reconsidered for hosted orchestration or messaging; neither eliminates the required Git/Docker reconciliation and verification gates.
+Mastra 1.74.0 owns orchestration, with libSQL 1.25.0 for persisted snapshots and
+observability 1.18.3 for stored traces. CLI/build tooling is Mastra 1.32.1.
+Native Claude Code/Codex still own authentication and execution. Python adapters
+retain resource/evidence/remote-mutation ownership; Python supervision now handles
+processes only. Project memory is provenance-backed SQLite, isolated per repository.
+
+This supersedes the original Python-only recommendation below. Mastra was added
+for the user's explicit requirement to organise/inspect workflows in Studio.
+The canonical skill was read from mastra-ai/skills; implementation used installed
+package types/docs, including restart versus resume, snapshot persistence,
+autoRestartActiveRuns=false and native host usage trace events.
 
 ## Installed capabilities actually inspected
 
@@ -35,7 +45,7 @@ Official supported CLI path makes private upload APIs/browser session token extr
 
 ## Evaluated alternatives
 
-Mastra current official workflow docs offer structured steps, storage snapshots, suspension/resumption, streaming and workflow runners. Could wrap native child processes, but still needs external process supervision and custom side-effect reconciliation. Adding Node/Mastra/storage adapter solely to run one sequential laptop worker overlaps stdlib state store without reducing required engineering. Dedicated skill is absent; no Mastra API invented or used.
+Initial evaluation: Mastra current official workflow docs offer structured steps, storage snapshots, suspension/resumption, streaming and workflow runners. Could wrap native child processes, but still needs external process supervision and custom side-effect reconciliation. Adding Node/Mastra/storage adapter solely to run one sequential laptop worker overlaps stdlib state store without reducing required engineering. Dedicated skill is absent; no Mastra API invented or used.
 
 Hermes official repository documentation describes persistent sessions/memory/skills and an optional Codex app-server runtime. That mode delegates terminal/files/MCP execution to Codex while Hermes owns shell/session database/memory. This is a real supported integration, not a hypothetical one, but adds a second lifecycle/memory owner for this request. Hermes documentation also describes borrowing native CLI logins and warns of rotating refresh-token collisions. Do not adopt that mechanism: native CLI workers keep native authentication and shared playbook. Hermes session imports are migration features, not equivalent task lifecycle or verified delivery.
 
@@ -53,3 +63,52 @@ Hermes official repository documentation describes persistent sessions/memory/sk
 - https://github.blog/changelog/2026-09-01-github-cli-media-in-issues-pull-requests-and-comments/ — feature release.
 
 Research made no repository changes, sent no external messages, and performed no delivery mutations. Successful end-to-end auth/model calls, Jira intake, attachment upload and browser render are implementation validation work still required.
+
+## Hermes memory and concurrency follow-up
+
+Verified official v2026.9.24: Hermes tools MCP explicitly excludes memory and
+session_search because they require a running AIAgent. Its profile documentation
+warns against sharing one Hermes home between concurrent agents. Built-in memory
+is bounded; provider plugins plug storage into Hermes, not Hermes into Mastra.
+Dotagent therefore owns shared project memory and retains native worker authentication.
+No standalone Hermes memory API is claimed or invented.
+
+- https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/agent/transports/hermes_tools_mcp_server.py#L53
+- https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/website/docs/user-guide/profiles.md
+- https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/website/docs/user-guide/features/memory.md
+
+## Host entry points and task sources (7 October 2026)
+
+- Official Codex skills docs: https://developers.openai.com/codex/skills/ — explicit
+  `$dotagent` or `/skills`, user discovery in `~/.agents/skills`, symlinks supported.
+  No invented `/dotagent` custom command is claimed for Codex.
+- Official Claude Code docs: https://code.claude.com/docs/en/skills — a user
+  `~/.claude/skills/dotagent/SKILL.md` provides `/dotagent` and `$ARGUMENTS`.
+  Claude-specific frontmatter is not validated by the Codex-only validator.
+- Both entry points read one installed INTERACTION.md and PLAYBOOK.md; no extra
+  orchestration runtime or API subscription-token reuse is introduced.
+- Local requests are durable tasks. Other tracker context can be imported by the
+  host's authenticated tools with its URL. Automated Jira intake remains optional;
+  GitHub mentions use supported `gh api` issue comments, PR review comments and reviews.
+- Private screenshot verification can use authenticated GitHub `body_html` from
+  the actual PR, decoded in Chromium. The receipt distinguishes this surface from
+  the full GitHub page; signed CDN query strings never enter receipts or logs.
+
+## Visible terminal and human handoff
+
+Installed Codex 0.160.1 supports `codex resume UUID --no-daemon --no-alt-screen`
+and `codex --no-daemon exec`. Isolated execution owns its process group; shared
+daemon execution is unsuitable for reliable local worker interruption here.
+A fresh isolated session was reopened in the interactive terminal with history.
+Official entry point: https://developers.openai.com/codex/cli/features/.
+
+Claude's installed CLI and https://code.claude.com/docs/en/sessions document
+`claude --resume UUID` for a persisted `-p` session, although those sessions do
+not appear in the ordinary picker. Dotagent uses the exact recorded ID, never
+`--last` or `--continue` across concurrent tasks. Interactive Claude handoff
+remains unverified on this machine.
+
+Enter/Ctrl-C in the visible worker requests task ownership, stops native execution,
+waits for its iteration lock and launches the host TUI. The child inherits exclusive
+locks across launcher crashes. Explicit return reconciles human changes and reruns
+verification. This is stop-and-resume, not two clients writing the same session.

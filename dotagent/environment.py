@@ -1,10 +1,12 @@
 """Worktrees and explicit, project-owned Compose resources."""
 import hashlib
 import json
+import runpy
 import os
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 import time
 
@@ -54,8 +56,19 @@ def prepare_worktree(state, task, config):
             os.fsync(stream.fileno())
     if 'worktree' not in task:
         slug = task['id'].lower()
-        task['branch'] = f'dotagent/{slug}'
-        task['base'] = git(repo, 'rev-parse', config.get('base', 'HEAD'))
+        target = task.get('target_pr')
+        if target:
+            if target['repository'] != config['github'] or target['state'] != 'open':
+                raise RuntimeError('cannot adopt a closed or cross-repository PR')
+            command(['git', 'check-ref-format', '--branch', target['branch']])
+            fetched = 'refs/dotagent/' + hashlib.sha256((str(state.root)+task['id']).encode()).hexdigest()
+            command(['git', '-C', str(repo), 'fetch', 'origin', '+refs/heads/' + target['branch'] + ':' + fetched])
+            if git(repo, 'rev-parse', fetched) != target['sha']:
+                raise RuntimeError('PR changed since intake; refresh context before adoption')
+            task['branch'], task['base'] = f'dotagent/{slug}', target['sha']
+        else:
+            task['branch'] = f'dotagent/{slug}'
+            task['base'] = git(repo, 'rev-parse', config.get('base', 'HEAD'))
         task['worktree'] = str(repo.parent / (repo.name + '-worktrees') / slug)
         state.save(task)  # Write intent before mutation; reconcile after a crash.
     path = Path(task['worktree'])
@@ -91,24 +104,44 @@ def prepare_worktree(state, task, config):
 
 
 def allocate_port(state, owner, name, start=14000, end=24000):
-    row = state.db.execute('SELECT port FROM ports WHERE owner=? AND name=?', (owner, name)).fetchone()
-    if row:
-        return row[0]
-    # Single supervisor plus transaction protects future concurrent allocators. Docker still owns
-    # the final bind: a competing external process can take a port before up and must cause failure.
-    with state.db:
-        state.db.execute('BEGIN IMMEDIATE')
-        for port in range(start, end):
-            if state.db.execute('SELECT 1 FROM ports WHERE port=?', (port,)).fetchone():
-                continue
-            with socket.socket() as sock:
-                try:
-                    sock.bind(('127.0.0.1', port))
-                except OSError:
-                    continue
-            state.db.execute('INSERT INTO ports VALUES (?,?,?)', (port, owner, name))
-            return port
-    raise RuntimeError('port pool exhausted')
+    # A machine-wide reservation also covers ports prepared before Docker binds.
+    root = Path(os.environ.get('DOTAGENT_RESOURCE_DIR', '~/.local/state/dotagent')).expanduser()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    database = root / 'port-leases.sqlite'
+    registry = sqlite3.connect(database, timeout=30)
+    os.chmod(database, 0o600)
+    identity = hashlib.sha256((str(state.root) + '\0' + owner).encode()).hexdigest()
+    try:
+        registry.execute('CREATE TABLE IF NOT EXISTS leases (port INTEGER PRIMARY KEY, owner TEXT, name TEXT, UNIQUE(owner,name))')
+        with registry:
+            registry.execute('BEGIN IMMEDIATE')
+            existing = registry.execute('SELECT port FROM leases WHERE owner=? AND name=?', (identity,name)).fetchone()
+            old = state.db.execute('SELECT port FROM ports WHERE owner=? AND name=?', (owner,name)).fetchone()
+            port = existing[0] if existing else None
+            if port is None and old and not registry.execute('SELECT 1 FROM leases WHERE port=?',(old[0],)).fetchone():
+                port = old[0]  # Adopt an existing project lease without changing a running stack.
+            if port is None:
+                for candidate in range(start,end):
+                    if registry.execute('SELECT 1 FROM leases WHERE port=?',(candidate,)).fetchone():
+                        continue
+                    if state.db.execute('SELECT 1 FROM ports WHERE port=?',(candidate,)).fetchone():
+                        continue
+                    with socket.socket() as sock:
+                        try:
+                            sock.bind(('127.0.0.1',candidate))
+                        except OSError:
+                            continue
+                    port = candidate
+                    break
+            if port is None:
+                raise RuntimeError('port pool exhausted')
+            registry.execute('INSERT OR IGNORE INTO leases VALUES (?,?,?)',(port,identity,name))
+        with state.db:
+            state.db.execute('DELETE FROM ports WHERE owner=? AND name=?',(owner,name))
+            state.db.execute('INSERT INTO ports VALUES (?,?,?)',(port,owner,name))
+        return port
+    finally:
+        registry.close()
 
 
 def safe_env():
@@ -116,15 +149,6 @@ def safe_env():
     return {k: v for k, v in os.environ.items()
             if k in {'PATH', 'HOME', 'USER', 'TMPDIR', 'SSH_AUTH_SOCK', 'DOCKER_HOST',
                      'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'}}
-
-
-def coterie_variables(ports):
-    return {'DATABASE_URL': 'postgres://coterie:coterie@db:5432/coterie',
-            'APP_ENV': 'local', 'PILOT_AUTH': 'on', 'KEYCLOAK_DECISIONS': 'on',
-            'PERSONA_SWITCHER': 'off', 'APP_BASE_URL': f"http://localhost:{ports['app:3000']}",
-            'KEYCLOAK_PUBLIC_URL': f"http://localhost:{ports['keycloak:8080']}",
-            'SMTP_HOST': 'mailpit', 'SMTP_PORT': '1025', 'SMTP_SECURE': 'false',
-            'AZURE_AD_CLIENT_ID': '', 'AZURE_AD_CLIENT_SECRET': '', 'AZURE_AD_TENANT_ID': ''}
 
 
 def isolate_compose(model, project, worktree, ports, cpus, memory):
@@ -141,6 +165,13 @@ def isolate_compose(model, project, worktree, ports, cpus, memory):
     for name, spec in model['services'].items():
         if spec.get('privileged') or spec.get('network_mode') or spec.get('pid') or spec.get('devices'):
             raise RuntimeError(f'unsafe shared host configuration: {name}')
+        if spec.get('volumes_from'):
+            raise RuntimeError('volumes_from requires a dedicated isolation adapter')
+        if spec.get('build'):
+            spec['image'] = f'{project}-{name}:local'
+            if isinstance(spec['build'], dict):
+                spec['build'].pop('tags', None)
+            spec['pull_policy'] = 'build'
         spec.pop('container_name', None)
         spec['cpus'], spec['mem_limit'] = str(cpus), memory
         spec.setdefault('labels', {})['dev.dotagent.owner'] = project
@@ -158,6 +189,17 @@ class Environment:
     def __init__(self, state, task, config):
         self.state, self.task, self.config = state, task, config
         self.directory = state.directory(task['id'])
+        if config.get('adapter'):
+            raise ValueError('Built-in project adapters have moved to private environment_adapter files')
+        path = config.get('environment_adapter')
+        self.adapter = {}
+        if path:
+            path = Path(path).expanduser()
+            if not path.is_absolute() or not path.is_file():
+                raise ValueError('environment_adapter must name an existing absolute Python file')
+            self.adapter = runpy.run_path(str(path))
+            if any(name in self.adapter and not callable(self.adapter[name]) for name in ('compose_env', 'check_env', 'ready')):
+                raise ValueError('environment adapter hooks must be callable')
 
     def prepare(self):
         task, config = self.task, self.config
@@ -174,8 +216,8 @@ class Environment:
         model = json.loads(command(args + ['config', '--format', 'json'], cwd=worktree, env=env).stdout)
         ports = {f"{name}:{port['target']}": allocate_port(self.state, task['id'], f"{name}:{port['target']}")
                  for name, spec in model['services'].items() for port in spec.get('ports', [])}
-        if config.get('adapter') == 'coterie':
-            env.update(coterie_variables(ports))
+        if 'compose_env' in self.adapter:
+            env.update(self.adapter['compose_env'](ports))
             model = json.loads(command(args + ['config', '--format', 'json'], cwd=worktree, env=env).stdout)
         model = isolate_compose(model, project, worktree, ports,
                                 config.get('cpus_per_service', 2), config.get('memory_per_service', '2g'))
@@ -196,15 +238,8 @@ class Environment:
         env = safe_env()
         env.update(self.config.get('check_env', {}))
         ports = self.task['environment'].get('ports', {})
-        if self.config.get('adapter') == 'coterie':
-            env.update(coterie_variables(ports))
-            host_db = f"postgres://coterie:coterie@127.0.0.1:{ports['db:5432']}"
-            env.update(DATABASE_URL=host_db + '/coterie', TEST_DATABASE_URL=host_db + '/dotagent_test',
-                       KEYCLOAK_INTERNAL_URL=env['KEYCLOAK_PUBLIC_URL'], TYPESENSE_HOST='127.0.0.1',
-                       TYPESENSE_PORT=str(ports['typesense:8108']),
-                       TYPESENSE_API_KEY='local-dev-typesense-key-not-for-deployment',
-                       SMTP_HOST='127.0.0.1', SMTP_PORT=str(ports['mailpit:1025']),
-                       CLOUD_TASKS_EMULATOR_HOST=f"127.0.0.1:{ports['cloud-tasks-emulator:8123']}")
+        if 'check_env' in self.adapter:
+            env.update(self.adapter['check_env'](ports))
         return env
 
     def inventory(self):
@@ -242,7 +277,7 @@ class Environment:
                 self.state.set('worker', process_record(process, self.task['id'], args, self.directory))
                 while process.poll() is None:
                     self.state.set('heartbeat', time.time())
-                    if self.state.get('paused') or self.state.task(self.task['id'])['status'] == 'cancelled':
+                    if self.state.get('paused') or self.state.get('human:' + self.task['id']) or self.state.task(self.task['id'])['status'] == 'cancelled':
                         raise Interrupted('Compose startup interrupted')
                     if time.monotonic() - started > self.config.get('startup_seconds', 1200):
                         raise RuntimeError('Compose startup timed out; owned resources retained')
@@ -255,8 +290,8 @@ class Environment:
             raise RuntimeError('Compose startup failed; see compose-start.log')
         deadline = time.monotonic() + self.config.get('readiness_seconds', 300)
         while time.monotonic() < deadline:
-            if self.state.get('paused') or self.state.task(self.task['id'])['status'] == 'cancelled':
-                raise RuntimeError('readiness interrupted')
+            if self.state.get('paused') or self.state.get('human:' + self.task['id']) or self.state.task(self.task['id'])['status'] == 'cancelled':
+                raise Interrupted('readiness interrupted')
             self.state.set('heartbeat', time.time())
             result = command(self.argv('ps', '-a', '--format', 'json'), env=safe_env())
             raw = result.stdout.strip()
@@ -267,11 +302,8 @@ class Environment:
             jobs = all(by_name.get(n, {}).get('State') == 'exited'
                        and by_name[n].get('ExitCode') == 0 for n in self.config.get('jobs', []))
             if ready and jobs:
-                if self.config.get('adapter') == 'coterie':
-                    base = self.argv('exec', '-T', 'db', 'psql', '-U', 'coterie', '-d', 'coterie')
-                    exists = command(base + ['-tAc', "SELECT 1 FROM pg_database WHERE datname='dotagent_test'"], env=safe_env()).stdout.strip()
-                    if exists != '1':
-                        command(base + ['-c', 'CREATE DATABASE dotagent_test'], env=safe_env())
+                if 'ready' in self.adapter:
+                    self.adapter['ready'](self)
                 env['ready_at'] = time.time()
                 env.pop('stopped_at', None)
                 self.state.save(self.task)

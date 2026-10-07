@@ -51,7 +51,7 @@ def codex_mcp_args(only):
 def host_command(host, cwd, directory, schema, config, bridge=False):
     if host == 'codex':
         atomic(directory / 'schema.json', schema)
-        return ['codex', 'exec', '--json', '--color', 'never', '-C', str(cwd),
+        return ['codex', '--no-daemon', 'exec', '--json', '--color', 'never', '-C', str(cwd),
                 '-s', 'read-only' if bridge else config.get('codex_sandbox', 'workspace-write'),
                 '--add-dir', str(directory), '--output-schema', str(directory / 'schema.json'),
                 '-o', str(directory / 'result.json'),
@@ -75,17 +75,13 @@ def execute(host, prompt, cwd, directory, schema, config, state, task=None, brid
     result_path.unlink(missing_ok=True)
     atomic(directory / 'prompt.md', prompt)
     config = dict(config)
-    reservation = 0
+    reservation = None
     if config.get('max_spend_usd') is not None:
         if host != 'claude':
             raise RuntimeError('hard USD budget unavailable for this host; configure time/token limits')
-        spent = state.get('spend_usd', 0)
-        reservation = min(config.get('iteration_budget_usd', 5), config['max_spend_usd'] - spent)
-        if reservation <= 0:
-            raise RuntimeError('persistent spending budget exhausted')
         # Reserve before spawn. A crash/unknown cost retains this conservative charge.
-        state.set('spend_usd', spent + reservation)
-        config['iteration_budget_usd'] = reservation
+        reservation, amount = state.reserve_spend(config['max_spend_usd'], config.get('iteration_budget_usd', 5))
+        config['iteration_budget_usd'] = amount
     argv = host_command(host, cwd, directory, schema, config, bridge)
     started = time.monotonic()
     last_size, last_activity = 0, started
@@ -108,7 +104,7 @@ def execute(host, prompt, cwd, directory, schema, config, state, task=None, brid
                 if size != last_size:
                     last_size, last_activity = size, now
                 task_state = state.task(task) if task else None
-                if state.get('paused') or (task_state and task_state['status'] == 'cancelled'):
+                if state.get('paused') or state.get('human:' + str(task)) or (task_state and task_state['status'] == 'cancelled'):
                     raise Interrupted('paused or cancelled')
                 if now - started > timeout:
                     raise RuntimeError('worker time limit; saved handover will be loaded on retry')
@@ -125,7 +121,10 @@ def execute(host, prompt, cwd, directory, schema, config, state, task=None, brid
                         event = json.loads(line)
                         actual = event.get('total_cost_usd')
                         if event.get('type') == 'result' and isinstance(actual, (int, float)):
-                            state.set('spend_usd', state.get('spend_usd') - reservation + actual)
+                            try:
+                                state.settle_spend(reservation, actual)
+                            except ValueError:
+                                pass  # Invalid provider cost retains the conservative reservation.
                             break
                     except json.JSONDecodeError:
                         pass

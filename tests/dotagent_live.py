@@ -16,7 +16,76 @@ from dotagent.environment import Environment, git, prepare_worktree
 from dotagent.runtime import verify
 
 
-def run(package):
+def concurrent_workflows(state, tasks, project):
+    """Real scheduler + two workers; only remote GitHub lookup is a fixture."""
+    import os
+    import subprocess
+    import uuid
+    from dotagent.supervisor import recover_tasks
+    config = {'state_dir': str(state.root), 'project_name': 'Concurrent fixture',
+              'concurrency': 2, 'repository': {**project, 'github': 'fixture/counter'},
+              'host': {}, 'jira': {'poll_seconds': 300, 'eligible_statuses': ['Fixture']},
+              'limits': {'max_iterations': 1, 'max_failures': 3, 'max_stagnant': 4,
+                         'task_seconds': 300, 'backoff_seconds': 1, 'iteration_wall_seconds': 120}}
+    configfile = state.root / 'concurrent-config.json'
+    atomic(configfile, config)
+    root = Path(__file__).resolve().parents[1]
+    for task in tasks:
+        task = state.task(task['id'])
+        task.update(phase='verify', status='active', attempts=0, failures=0, stagnant=0,
+                    ui_changed=False, workflow_run=str(uuid.uuid4()))
+        task['ticket'].update(status='Fixture', blockers=[])
+        task['criteria'] = [{'id': 'health', 'description': 'Live service healthy', 'expected': 'HTTP 200',
+            'manual': 'GET /health', 'checks': [{'cwd': '.', 'kind': 'running_app',
+            'argv': [sys.executable, '-c', "import os,time,urllib.request; time.sleep(3); assert urllib.request.urlopen(os.environ['DOTAGENT_BASE_URL']+'/health').status==200"]}]}]
+        state.save(task)
+    atomic(state.root / 'jira/backlog.json', {'fetched_at': time.time(),
+        'tickets': [state.task(t['id'])['ticket'] for t in tasks]})
+    # Read-only GH boundary: this fixture has no remote repository or PRs.
+    fakebin = state.root / 'fixture-bin'
+    fakebin.mkdir()
+    atomic(fakebin / 'gh', '#!/bin/sh\n[ "$1 $2" = "pr list" ] || exit 19\nprintf "[]"\n')
+    (fakebin / 'gh').chmod(0o700)
+    log = (state.root / 'concurrent-scheduler.log').open('w')
+    process = subprocess.Popen(['node', str(root / 'dist/src/runner.js')], cwd=root,
+        stdout=log, stderr=log, start_new_session=True,
+        env=dict(os.environ, DOTAGENT_EXECUTE='1', DOTAGENT_RUNTIME_CONFIG=str(configfile),
+            DOTAGENT_PYTHON=sys.executable, PYTHONPATH=str(root), PATH=str(fakebin)+os.pathsep+os.environ['PATH']))
+    scoped = [State(state.root, scope=t['id']) for t in tasks]
+    try:
+        overlapped = False
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            assert process.poll() is None, 'scheduler exited unexpectedly'
+            if all(s.get('iteration_worker') for s in scoped):
+                # Fixture drain: prevent fresh intake after these two completed runs.
+                state.set('preferred_workers', 0)
+            if all(s.get('executing_phase') for s in scoped):
+                overlapped = True
+            if all(state.task(t['id'])['status']=='blocked' for t in tasks):
+                break
+            time.sleep(0.1)
+        assert overlapped, 'scheduler workers never executed concurrently'
+        for task in tasks:
+            saved = state.task(task['id'])
+            assert any(e['criterion']=='health' and e['exit_code']==0 for e in saved['evidence']), 'live verification missing'
+            assert saved['status']=='blocked' and saved['attempts']==1, 'fixture budget did not suspend workflow'
+        return True
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill(); process.wait()
+        recover_tasks(state, config, 'fixture finished', failed=False)
+        state.set('preferred_workers', 2)
+        for item in scoped:
+            item.db.close()
+        log.close()
+        tasks[:] = [state.task(t['id']) for t in tasks]
+
+
+def run(package, mastra=False):
     root = Path.home() / '.local/state/dotagent-validation' / str(time.time_ns())
     root.mkdir(parents=True, mode=0o700)
     repo = root / 'fixture'
@@ -95,6 +164,8 @@ http.createServer((req,res)=>{
         command(Environment(state, second, config).argv('restart', 'app'))
         assert verify(state, second, config)
         report['checks']['fixed_behavior_verified'] = True
+        if mastra:
+            report['checks']['parallel_mastra_workers'] = concurrent_workflows(state, tasks, config)
         report['artifacts'] = second['artifacts']
         report['environments'] = [t['environment'] for t in tasks]
     finally:
@@ -106,4 +177,4 @@ http.createServer((req,res)=>{
 
 
 if __name__ == '__main__':
-    run(sys.argv[1])
+    run(sys.argv[1], '--mastra' in sys.argv[2:])

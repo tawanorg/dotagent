@@ -1,0 +1,27 @@
+{
+  "name": "dotagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "mastra dev",
+    "build": "tsc && mastra build --studio",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/workflow.test.ts"
+  },
+  "dependencies": {
+    "@mastra/core": "1.74.0",
+    "@mastra/libsql": "1.25.0",
+    "@mastra/observability": "1.18.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "mastra": "1.32.1",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3"
+  }
+}
